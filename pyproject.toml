@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loom"
+version = "0.1.0"
+description = "Git for Dataframes"
+authors = [
+    { name="Author", email="author@example.com" },
+]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "polars",
+    "click",
+    "duckdb",
+    "websockets",
+    "pyarrow",
+    "fastexcel",
+    "xlsxwriter"
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
+[project.scripts]
+loom = "backend.cli:cli"
+
+[tool.pytest.ini_options]
+testpaths = ["backend"]
