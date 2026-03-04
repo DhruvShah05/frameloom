@@ -456,6 +456,15 @@ def test_audit_handles_awkward_column_names(tmp_path):
     assert mismatch["_mismatched_columns"] == ['we"ird']
 
 
+def test_audit_compares_columns_whose_type_changed(people):
+    pid, root = _load(people)
+    cast = _ok_op(pid, root, "cast_column", columns=["salary"], dtype="Float64", clean=True)
+    r = client.post(f"/project/{pid}/audit/compare", json={"node_a": root, "node_b": cast, "key_column": "id"})
+    assert r.status_code == 200, r.text
+    rows = {row["id"]: row for row in r.json()["data"]}
+    assert rows[1]["_mismatched_columns"] == ["salary"]  # "100,000" vs "100000.0"
+
+
 # ------------------------------------------------------------------ security
 
 def test_rejects_foreign_origins_and_hosts(people):

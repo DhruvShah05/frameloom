@@ -214,7 +214,9 @@ class ExecutionEngine:
         schema = dict(lf.collect_schema())
         view = lf.with_row_index(ROW_INDEX_COL)
         if filters:
-            view = view.filter(ops.filter_expr({"conditions": filters, "combine": "and"}, schema))
+            # Each item is a condition, or a group {"conditions": [...], "combine": "or"}.
+            exprs = [ops.filter_expr(f if f.get("conditions") else {"conditions": [f]}, schema) for f in filters]
+            view = view.filter(pl.all_horizontal(exprs))
         if sort:
             cols = [s["column"] for s in sort if s.get("column") in schema]
             if cols:
@@ -441,6 +443,13 @@ class ExecutionEngine:
 
         if key_column not in df_a.schema or key_column not in df_b.schema:
             raise ValueError(f"Key column '{key_column}' must be present in both branches.")
+
+        # A column whose type changed between the two steps (e.g. "$1,757" text
+        # vs 1757.0) can't be compared directly: compare both sides as text.
+        retyped = [c for c in df_a.schema if c in df_b.schema and df_a.schema[c] != df_b.schema[c]]
+        if retyped:
+            df_a = df_a.with_columns([pl.col(c).cast(pl.String) for c in retyped])
+            df_b = df_b.with_columns([pl.col(c).cast(pl.String) for c in retyped])
 
         q = sources.quote_ident
         key = q(key_column)
