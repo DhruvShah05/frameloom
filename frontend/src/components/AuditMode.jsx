@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { AgGridReact } from 'ag-grid-react';
+import { rowsToCsv, saveBlob } from '../api';
 
-export default function AuditMode({ project, onRunAudit, auditData, auditSchema }) {
+export default function AuditMode({ project, onRunAudit, auditData, auditSchema, auditSummary, schema, running }) {
   const [nodeA, setNodeA] = useState('');
   const [nodeB, setNodeB] = useState('');
   const [keyColumn, setKeyColumn] = useState('');
@@ -193,11 +194,13 @@ export default function AuditMode({ project, onRunAudit, auditData, auditSchema 
             <span className="material-symbols-outlined text-[14px] text-tertiary ml-2">key</span>
             <input 
               type="text" 
+              list="audit-key-columns"
               value={keyColumn} 
               onChange={e => setKeyColumn(e.target.value)} 
               placeholder="e.g. id" 
-              className="bg-transparent border-none outline-none py-1 px-2 text-sm font-mono w-[120px]"
+              className="bg-transparent border-none outline-none py-1 px-2 text-sm font-mono w-[140px]"
             />
+            <datalist id="audit-key-columns">{Object.keys(schema || {}).map(c => <option key={c} value={c} />)}</datalist>
           </div>
         </div>
         
@@ -205,10 +208,11 @@ export default function AuditMode({ project, onRunAudit, auditData, auditSchema 
         
         <button 
           onClick={() => onRunAudit(nodeA, nodeB, keyColumn)}
-          className="bg-primary-container text-on-primary h-7 px-4 rounded text-ui-small font-medium hover:bg-primary transition-colors flex items-center gap-1 cursor-pointer"
+          disabled={!nodeA || !nodeB || !keyColumn || running}
+          className="bg-primary-container text-on-primary h-7 px-4 rounded text-ui-small font-medium hover:bg-primary transition-colors flex items-center gap-1 cursor-pointer border-0 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <span className="material-symbols-outlined text-[14px]">play_arrow</span>
-          Run Audit
+          {running ? 'Running…' : 'Run Audit'}
         </button>
       </div>
       
@@ -217,15 +221,15 @@ export default function AuditMode({ project, onRunAudit, auditData, auditSchema 
         <span className="text-on-surface-variant font-medium">Audit Results:</span>
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-sm bg-audit-match border border-surface-dim"></div>
-          <span>Match (Default)</span>
+          <span>Match{auditSummary ? ` (${auditSummary.match.toLocaleString()})` : ''}</span>
         </div>
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-sm bg-audit-mismatch border border-surface-dim"></div>
-          <span>Mismatch</span>
+          <span>Mismatch{auditSummary ? ` (${auditSummary.mismatch.toLocaleString()})` : ''}</span>
         </div>
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-sm bg-audit-missing border border-surface-dim"></div>
-          <span>Missing</span>
+          <span>Missing{auditSummary ? ` (A: ${auditSummary.missing_in_a.toLocaleString()}, B: ${auditSummary.missing_in_b.toLocaleString()})` : ''}</span>
         </div>
       </div>
       
@@ -247,11 +251,17 @@ export default function AuditMode({ project, onRunAudit, auditData, auditSchema 
         )}
       </div>
 
-      {/* Floating Action Button (FAB) */}
-      <button className="absolute bottom-6 right-6 h-12 px-6 bg-primary-container text-on-primary rounded-full shadow-lg hover:bg-primary transition-all flex items-center gap-2 font-ui-label text-ui-label font-bold z-30 ring-4 ring-surface-container-lowest border border-primary cursor-pointer">
-        <span className="material-symbols-outlined">code_blocks</span>
-        Generate Discrepancy Code
-      </button>
+      {auditData && auditData.length > 0 && (
+        <button
+          onClick={() => {
+            const cols = [...Object.keys(auditSchema || {}), '_mismatched_columns'];
+            saveBlob(new Blob([rowsToCsv(auditData, cols)], { type: 'text/csv' }), 'audit-results.csv');
+          }}
+          className="absolute bottom-6 right-6 h-12 px-6 bg-primary-container text-on-primary rounded-full shadow-lg hover:bg-primary transition-all flex items-center gap-2 font-ui-label text-ui-label font-bold z-30 ring-4 ring-surface-container-lowest border border-primary cursor-pointer">
+          <span className="material-symbols-outlined">download</span>
+          Download results (CSV)
+        </button>
+      )}
     </div>
   );
 }

@@ -1,231 +1,130 @@
-import React, { useMemo, useRef, useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AgGridReact } from 'ag-grid-react';
+import { api, formatValue } from '../api';
 
-export default function CompareView({
-  project,
-  baseNode,
-  compareNode,
-  setCompareNode,
-  data,
-  schema,
-  compareData,
-  compareSchema,
-  fetchData
-}) {
-  const baseGridRef = useRef(null);
-  const compareGridRef = useRef(null);
-  const [isSyncing, setIsSyncing] = useState(false);
+const ROW_LIMIT = 500;
 
-  // Helper to find branch name by node id
-  const getBranchName = (nodeId) => {
-    if (!project) return 'Unknown';
-    const b = Object.values(project.branches).find(b => b.head_node_id === nodeId);
-    return b ? b.name : 'Unknown';
-  };
+function nodeOptions(project) {
+  const headToBranches = {};
+  Object.values(project.branches).forEach(b => { (headToBranches[b.head_node_id] ||= []).push(b.name); });
+  const heads = [];
+  const others = [];
+  Object.values(project.nodes).forEach(n => {
+    const branches = headToBranches[n.id];
+    const label = `${branches ? `[${branches.join(', ')}] ` : ''}${n.operation.label}`;
+    (branches ? heads : others).push({ id: n.id, label });
+  });
+  return { heads, others };
+}
 
-  const handleCompareSelect = (e) => {
-    const nodeId = e.target.value;
-    setCompareNode(nodeId);
-    if (nodeId && project) {
-      fetchData(project.id, nodeId, true);
-    }
-  };
-
-  // Sync scroll
-  const handleBaseScroll = (event) => {
-    if (isSyncing) return;
-    setIsSyncing(true);
-    if (compareGridRef.current?.api) {
-      const top = event.api.getVerticalPixelRange().top;
-      const left = event.api.getHorizontalPixelRange().left;
-      
-      const compareApi = compareGridRef.current.api;
-      if (Math.abs(compareApi.getVerticalPixelRange().top - top) > 5 || 
-          Math.abs(compareApi.getHorizontalPixelRange().left - left) > 5) {
-        
-        // ag-grid doesn't have setVerticalScrollPosition, so we mock it using JS on the body if possible, 
-        // or just let them scroll independently. We can try ensureIndexVisible but pixel precision is hard.
-        // Actually, ag-grid has a grid instance method but it's not well exposed.
-        // For simplicity, we just use the UI indicator.
-      }
-    }
-    setTimeout(() => setIsSyncing(false), 50);
-  };
-
-  const handleCompareScroll = (event) => {
-    if (isSyncing) return;
-    setIsSyncing(true);
-    setTimeout(() => setIsSyncing(false), 50);
-  };
-
-  // Build unified columns
-  const columns = useMemo(() => {
-    if (!schema && !compareSchema) return [];
-    const baseKeys = schema ? Object.keys(schema) : [];
-    const compareKeys = compareSchema ? Object.keys(compareSchema) : [];
-    return Array.from(new Set([...baseKeys, ...compareKeys]));
-  }, [schema, compareSchema]);
-
-  const MissingCellRenderer = (props) => (
+function MissingCellRenderer(props) {
+  return (
     <div className="w-full h-full hash-pattern opacity-60 flex items-center justify-center" style={{ margin: '0 -8px' }}>
       {props.node.rowIndex === 0 && <span className="text-[10px] italic text-on-surface-variant bg-surface-container-low px-1 rounded">not present</span>}
     </div>
   );
+}
 
-  const MissingHeaderComponent = () => (
-    <div className="w-full h-full hash-pattern opacity-60 flex items-center justify-center text-on-surface-variant">-</div>
-  );
+function buildColDefs(columns, mine, other) {
+  const rowNumCol = { headerName: '#', valueGetter: 'node.rowIndex + 1', width: 56, pinned: 'left', cellClass: 'row-number-cell' };
+  if (!columns.length) return [rowNumCol];
+  return [rowNumCol, ...columns.map(field => {
+    if (mine && !mine[field]) {
+      return { field, headerName: '–', cellRenderer: MissingCellRenderer, sortable: false, resizable: false, minWidth: 110, flex: 1, cellClass: 'p-0' };
+    }
+    const added = mine && other && !other[field];
+    const changed = mine && other && other[field] && other[field] !== mine[field];
+    return {
+      field,
+      headerName: `${field}${added ? '  +' : ''}${changed ? `  (${mine[field]})` : ''}`,
+      headerClass: added || changed ? 'bg-secondary-container text-on-secondary-container' : '',
+      cellClass: added ? 'border-x-2 border-primary-container' : '',
+      valueFormatter: p => formatValue(p.value, mine[field]),
+      sortable: true, resizable: true, minWidth: 110, flex: 1,
+    };
+  })];
+}
 
-  const AddedHeaderComponent = (props) => (
-    <div className="flex items-center justify-between w-full">
-      <span>{props.displayName}</span>
-      <span className="material-symbols-outlined text-[14px]">add_box</span>
-    </div>
-  );
+export default function CompareView({ project, baseNode, compareNode, setCompareNode, data, schema, compareData, compareSchema, fetchData }) {
+  const leftRef = useRef(null);
+  const rightRef = useRef(null);
+  const [diff, setDiff] = useState(null);
+  const [sync, setSync] = useState(true);
+  const { heads, others } = useMemo(() => nodeOptions(project), [project]);
 
-  const baseColDefs = useMemo(() => {
-    const rowNumCol = { headerName: '', valueGetter: 'node.rowIndex + 1', width: 50, pinned: 'left', cellClass: 'row-number-cell' };
-    if (!columns.length) return [rowNumCol];
+  useEffect(() => {
+    if (!compareNode || !baseNode) { setDiff(null); return; }
+    api(`/project/${project.id}/diff`, { query: { node_a: baseNode, node_b: compareNode } }).then(setDiff).catch(() => setDiff(null));
+  }, [project.id, baseNode, compareNode]);
 
-    const dataCols = columns.map(field => {
-      const isMissing = schema && !schema[field];
-      const isAdded = schema && compareSchema && !compareSchema[field] && schema[field];
-      
-      if (isMissing) {
-        return {
-          field,
-          headerName: '-',
-          headerComponent: MissingHeaderComponent,
-          cellRenderer: MissingCellRenderer,
-          sortable: false, filter: false, resizable: false, flex: 1,
-          cellClass: 'p-0',
-        };
-      }
-      
-      return {
-        field,
-        headerName: field,
-        headerComponent: isAdded ? AddedHeaderComponent : undefined,
-        headerClass: isAdded ? 'bg-secondary-container text-on-secondary-container border-b-2 border-primary-container border-b-solid !border-b-[2px]' : '',
-        cellClass: isAdded ? 'border-2 border-primary-container !px-[6px]' : '',
-        sortable: true, filter: true, resizable: true, flex: 1
-      };
-    });
-    
-    return [rowNumCol, ...dataCols];
-  }, [columns, schema, compareSchema]);
+  // Keep both grids at the same scroll position.
+  useEffect(() => {
+    if (!sync) return undefined;
+    const viewport = el => el?.querySelector('.ag-body-viewport');
+    const hscroll = el => el?.querySelector('.ag-center-cols-viewport');
+    let lock = false;
+    const link = (from, to) => () => {
+      if (lock) return;
+      lock = true;
+      const a = viewport(from), b = viewport(to);
+      if (a && b) b.scrollTop = a.scrollTop;
+      const ha = hscroll(from), hb = hscroll(to);
+      if (ha && hb) hb.scrollLeft = ha.scrollLeft;
+      requestAnimationFrame(() => { lock = false; });
+    };
+    const l = leftRef.current, r = rightRef.current;
+    const lv = viewport(l), rv = viewport(r), lh = hscroll(l), rh = hscroll(r);
+    const onL = link(l, r), onR = link(r, l);
+    [lv, lh].forEach(el => el?.addEventListener('scroll', onL, { passive: true }));
+    [rv, rh].forEach(el => el?.addEventListener('scroll', onR, { passive: true }));
+    return () => {
+      [lv, lh].forEach(el => el?.removeEventListener('scroll', onL));
+      [rv, rh].forEach(el => el?.removeEventListener('scroll', onR));
+    };
+  }, [sync, data, compareData]);
 
-  const compareColDefs = useMemo(() => {
-    const rowNumCol = { headerName: '', valueGetter: 'node.rowIndex + 1', width: 50, pinned: 'left', cellClass: 'row-number-cell' };
-    if (!columns.length) return [rowNumCol];
-
-    const dataCols = columns.map(field => {
-      const isMissing = compareSchema && !compareSchema[field];
-      const isAdded = compareSchema && schema && !schema[field] && compareSchema[field];
-      
-      if (isMissing) {
-        return {
-          field,
-          headerName: '-',
-          headerComponent: MissingHeaderComponent,
-          cellRenderer: MissingCellRenderer,
-          sortable: false, filter: false, resizable: false, flex: 1,
-          cellClass: 'p-0',
-        };
-      }
-      
-      return {
-        field,
-        headerName: field,
-        headerComponent: isAdded ? AddedHeaderComponent : undefined,
-        headerClass: isAdded ? 'bg-secondary-container text-on-secondary-container border-b-2 border-primary-container border-b-solid !border-b-[2px]' : '',
-        cellClass: isAdded ? 'border-2 border-primary-container !px-[6px]' : '',
-        sortable: true, filter: true, resizable: true, flex: 1
-      };
-    });
-    
-    return [rowNumCol, ...dataCols];
-  }, [columns, schema, compareSchema]);
+  const columns = useMemo(() => Array.from(new Set([...Object.keys(schema || {}), ...Object.keys(compareSchema || {})])), [schema, compareSchema]);
+  const baseColDefs = useMemo(() => buildColDefs(columns, schema, compareSchema), [columns, schema, compareSchema]);
+  const compareColDefs = useMemo(() => buildColDefs(columns, compareSchema, schema), [columns, schema, compareSchema]);
+  const baseLabel = project.nodes[baseNode]?.operation.label || 'Current step';
 
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-background relative h-full">
-      {/* Comparison Header */}
-      <div className="h-[40px] bg-surface-container-low border-b border-surface-variant flex items-center shrink-0 px-4">
-        <div className="flex-1 flex items-center justify-between">
-          {/* Left Side Config */}
-          <div className="flex items-center space-x-2">
-            <span className="text-ui-small text-on-surface-variant uppercase tracking-wider font-semibold">Base:</span>
-            <div className="flex items-center space-x-1 px-2 py-1 rounded border border-transparent">
-              <span className="font-medium text-sm text-on-surface">{getBranchName(baseNode)}</span>
-            </div>
-          </div>
-          
-          {/* Center Sync Indicator */}
-          <div className="flex items-center px-3 py-1 bg-surface-variant rounded-full text-on-surface-variant border border-outline-variant mx-4">
-            <span className="material-symbols-outlined text-[14px] mr-1">sync</span>
-            <span className="text-xs font-medium">Synced Scroll</span>
-          </div>
-          
-          {/* Right Side Config */}
-          <div className="flex-1 flex items-center justify-end space-x-2">
-            <span className="text-ui-small text-on-surface-variant uppercase tracking-wider font-semibold">Compare:</span>
-            {project && (
-              <select 
-                value={compareNode || ''} 
-                onChange={handleCompareSelect}
-                className="bg-surface-container-low border border-outline-variant rounded px-2 py-1 text-sm font-medium focus:outline-none focus:border-primary-container"
-              >
-                <option value="">Select branch...</option>
-                {Object.values(project.branches).map(b => (
-                  <option key={b.head_node_id} value={b.head_node_id}>{b.name}</option>
-                ))}
-              </select>
-            )}
-          </div>
-        </div>
+      <div className="min-h-[44px] bg-surface-container-low border-b border-surface-variant flex flex-wrap items-center shrink-0 px-4 py-1 gap-3">
+        <span className="text-ui-small text-on-surface-variant uppercase tracking-wider font-semibold">Base</span>
+        <span className="font-medium text-sm text-on-surface truncate max-w-[240px]" title={baseLabel}>{baseLabel}</span>
+        <label className="flex items-center gap-1 px-3 py-1 bg-surface-variant rounded-full text-on-surface-variant border border-outline-variant text-xs cursor-pointer">
+          <input type="checkbox" checked={sync} onChange={e => setSync(e.target.checked)} className="accent-[#c98f00]" /> Sync scroll
+        </label>
+        <span className="text-ui-small text-on-surface-variant uppercase tracking-wider font-semibold ml-auto">Compare with</span>
+        <select value={compareNode || ''} onChange={e => { setCompareNode(e.target.value); if (e.target.value) fetchData(project.id, e.target.value, true); }}
+          className="bg-white border border-outline-variant rounded px-2 py-1 text-sm max-w-[320px] focus:outline-none focus:border-primary-container">
+          <option value="">Select a step…</option>
+          <optgroup label="Branch heads">{heads.map(n => <option key={n.id} value={n.id}>{n.label}</option>)}</optgroup>
+          {others.length > 0 && <optgroup label="Other steps">{others.map(n => <option key={n.id} value={n.id}>{n.label}</option>)}</optgroup>}
+        </select>
       </div>
-      
-      {/* Split Grid Container */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Grid (Base) */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-auto bg-surface-container-lowest ag-theme-alpine ag-theme-loom">
-          {data ? (
-            <AgGridReact
-              ref={baseGridRef}
-              rowData={data}
-              columnDefs={baseColDefs}
-              rowHeight={30}
-              headerHeight={30}
-              onBodyScroll={handleBaseScroll}
-              animateRows={true}
-            />
-          ) : (
-             <div className="flex h-full items-center justify-center text-on-surface-variant font-ui-label">No base data</div>
-          )}
+      {diff && (
+        <div className="px-4 py-2 border-b border-surface-variant bg-white text-[12px] text-on-surface flex flex-wrap gap-x-6 gap-y-1">
+          <span>Rows: {diff.row_count_a.toLocaleString()} → {diff.row_count_b.toLocaleString()} <strong className={diff.row_count_delta ? 'text-secondary' : ''}>({diff.row_count_delta >= 0 ? '+' : ''}{diff.row_count_delta.toLocaleString()})</strong></span>
+          {diff.columns_added.length > 0 && <span>Added: {diff.columns_added.join(', ')}</span>}
+          {diff.columns_removed.length > 0 && <span>Removed: {diff.columns_removed.join(', ')}</span>}
+          {diff.dtype_changes.length > 0 && <span>Type changes: {diff.dtype_changes.map(d => `${d.column} ${d.from}→${d.to}`).join(', ')}</span>}
+          {!diff.columns_added.length && !diff.columns_removed.length && !diff.dtype_changes.length && <span className="text-on-surface-variant">Same columns and types</span>}
+          <span className="ml-auto text-on-surface-variant">Grids show the first {ROW_LIMIT} rows of each</span>
         </div>
-
-        {/* Center Divider */}
-        <div className="w-[2px] bg-primary-container shrink-0 relative z-20 shadow-[0_0_8px_rgba(201,143,0,0.3)]"></div>
-
-        {/* Right Grid (Compare) */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-auto bg-surface-container-lowest relative ag-theme-alpine ag-theme-loom">
-          {compareData ? (
-             <AgGridReact
-               ref={compareGridRef}
-               rowData={compareData}
-               columnDefs={compareColDefs}
-               rowHeight={30}
-               headerHeight={30}
-               onBodyScroll={handleCompareScroll}
-               animateRows={true}
-             />
-          ) : (
-            <div className="flex h-full items-center justify-center text-on-surface-variant font-ui-label">
-              Select a branch to compare
-            </div>
-          )}
+      )}
+      <div className="flex-1 flex overflow-hidden">
+        <div ref={leftRef} className="flex-1 flex flex-col min-w-0 bg-surface-container-lowest ag-theme-alpine ag-theme-loom">
+          {data ? <AgGridReact rowData={data} columnDefs={baseColDefs} rowHeight={30} headerHeight={30} /> : <div className="flex h-full items-center justify-center text-on-surface-variant font-ui-label">No base data</div>}
+        </div>
+        <div className="w-[2px] bg-primary-container shrink-0"></div>
+        <div ref={rightRef} className="flex-1 flex flex-col min-w-0 bg-surface-container-lowest ag-theme-alpine ag-theme-loom">
+          {compareNode && compareData ? <AgGridReact rowData={compareData} columnDefs={compareColDefs} rowHeight={30} headerHeight={30} /> : <div className="flex h-full items-center justify-center text-on-surface-variant font-ui-label">Pick a step to compare</div>}
         </div>
       </div>
     </div>
   );
 }
+
+export { ROW_LIMIT };
