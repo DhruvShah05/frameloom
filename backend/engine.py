@@ -93,7 +93,7 @@ class ExecutionEngine:
 
     def _check_source(self, project: Project) -> None:
         """Drop cached results if the source file changed on disk."""
-        sig = sources.source_signature(project.source_path)
+        sig = sources.source_signature(project.read_path)
         previous = self._signatures.get(project.id)
         if previous is not None and previous != sig:
             self.invalidate_project(project.id)
@@ -136,9 +136,9 @@ class ExecutionEngine:
             lf = self._cache_get(path_nodes[cache_hit_index].id).lazy()
             remaining_nodes = path_nodes[cache_hit_index + 1:]
         else:
-            lf = self.load_source(project.source_path, project.source_options)
+            lf = self.load_source(project.read_path, project.read_options)
             remaining_nodes = path_nodes
-            fmt = sources.infer_format(project.source_path, project.source_options)
+            fmt = sources.infer_format(project.read_path, project.read_options)
             if fmt in sources.EAGER_FORMATS and remaining_nodes:
                 # Re-reading Excel/JSON/databases is slow: keep the root in memory.
                 root = remaining_nodes[0]
@@ -180,6 +180,10 @@ class ExecutionEngine:
         return op.model_copy(update={"params": params, "label": label})
 
     # ------------------------------------------------------------ reads
+    def collect(self, project: Project, node_id: str) -> pl.DataFrame:
+        """The full result of a step as a DataFrame."""
+        return self.build_plan(project, node_id).collect()
+
     def get_data(self, project: Project, node_id: str, limit: int = 100, offset: int = 0) -> list[dict]:
         lf = self.build_plan(project, node_id)
         return json_safe_rows(lf.slice(offset, limit).collect())

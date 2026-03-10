@@ -391,10 +391,20 @@ def test_float_nan_and_inf_are_json_safe(tmp_path):
 
 # ---------------------------------------------------------- cache / recipes
 
+def _load_unpinned(path):
+    r = client.post("/project/load", json={"path": path, "snapshot": False})
+    assert r.status_code == 200, r.text
+    return r.json()["id"], r.json()["branches"]["main"]["head_node_id"]
+
+
+def _touch_newer(p):
+    os.utime(p, ns=(os.stat(p).st_atime_ns, os.stat(p).st_mtime_ns + 10_000_000))
+
+
 def test_cache_is_invalidated_when_source_changes(tmp_path):
     p = tmp_path / "live.csv"
     p.write_text("a\n1\n2\n")
-    pid, root = _load(str(p))
+    pid, root = _load_unpinned(str(p))
     node = _ok_op(pid, root, "group_by", by=["a"])  # expensive -> cached
     assert _engine_df(pid, node).height == 2
     assert node in engine.cache
@@ -475,3 +485,67 @@ def test_rejects_foreign_origins_and_hosts(people):
     r = client.get("/projects", headers={"Origin": "http://localhost:5173"})
     assert r.status_code == 200
     assert r.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+# ------------------------------------------------------- reproducible sources
+
+def test_pinned_versions_never_change(tmp_path):
+    p = tmp_path / "data.csv"
+    p.write_text("a\n1\n2\n")
+    pid, root = _load(str(p))
+    project = projects[pid]
+    assert project.snapshot_path and os.path.exists(project.snapshot_path)
+    node = _ok_op(pid, root, "filter_rows", column="a", operator="ge", value=1)
+    p.write_text("a\n1\n2\n3\n")
+    _touch_newer(p)
+    assert _engine_df(pid, node).height == 2  # still the frozen data
+    status = client.get(f"/project/{pid}/source").json()
+    assert status["status"] == "pinned" and status["original_changed"] is True
+
+
+def test_identical_files_share_one_snapshot(tmp_path):
+    a, b = tmp_path / "a.csv", tmp_path / "b.csv"
+    a.write_text("x\n1\n")
+    b.write_text("x\n1\n")
+    pa, _ = _load(str(a))
+    pb, _ = _load(str(b))
+    assert projects[pa].source_sha256 == projects[pb].source_sha256
+
+
+def test_unpinned_change_is_detected_and_can_be_accepted(tmp_path):
+    from backend.core import SourceChangedError
+    from backend.main import loom
+
+    p = tmp_path / "data.csv"
+    p.write_text("a\n1\n2\n")
+    pid, root = _load_unpinned(str(p))
+    assert client.get(f"/project/{pid}/source").json()["status"] == "ok"
+    os.utime(p, ns=(os.stat(p).st_atime_ns, os.stat(p).st_mtime_ns + 10_000_000))
+    assert client.get(f"/project/{pid}/source").json()["status"] == "ok", "touching is not changing"
+    p.write_text("a\n1\n2\n3\n")
+    _touch_newer(p)
+    assert client.get(f"/project/{pid}/source").json()["status"] == "changed"
+    with pytest.raises(SourceChangedError):
+        loom.dataframe(projects[pid])
+    assert loom.dataframe(projects[pid], allow_changed_source=True).height == 3
+    r = client.post(f"/project/{pid}/source/accept", json={"snapshot": True}).json()
+    assert r["status"] == "pinned"
+    assert [h.reason for h in projects[pid].source_history] == ["loaded", "pinned"]
+
+
+def test_database_and_remote_style_sources_are_frozen_to_parquet(tmp_path):
+    db = tmp_path / "d.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE t (a INTEGER)")
+        conn.executemany("INSERT INTO t VALUES (?)", [(1,), (2,)])
+    pid, root = _load(str(db), table="t")
+    assert projects[pid].snapshot_path.endswith(".parquet")
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO t VALUES (3)")
+    assert _engine_df(pid, root).height == 2
+
+
+def test_exported_code_records_provenance(people):
+    pid, root = _load(people)
+    code = client.post(f"/project/{pid}/export/code", json={"node_id": root}).json()["code"]
+    assert projects[pid].source_sha256 in code and "frozen copy" in code

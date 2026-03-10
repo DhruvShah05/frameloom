@@ -1,9 +1,7 @@
-import hashlib
 import os
 import re
 import shutil
 import tempfile
-import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Literal, Optional
 
@@ -18,8 +16,10 @@ from starlette.background import BackgroundTask
 
 from . import ops, sources
 from .codegen import generate_script
+from .core import HistoryError, Loom, SourceChangedError, file_digest, new_id, schema_hash
 from .engine import ExecutionEngine
 from .models import Branch, Node, Operation, Project, Recipe
+from .store import Store
 
 
 @asynccontextmanager
@@ -43,9 +43,15 @@ async def duckdb_exception_handler(request: Request, exc: Exception):
 
 @app.exception_handler(ValueError)
 @app.exception_handler(FileNotFoundError)
+@app.exception_handler(SourceChangedError)
 async def user_error_handler(request: Request, exc: Exception):
     # Bad input (unknown column, bad value, unsupported format...): a 400, not a crash.
-    return JSONResponse(status_code=400, content={"detail": str(exc)})
+    return JSONResponse(status_code=409 if isinstance(exc, SourceChangedError) else 400, content={"detail": str(exc)})
+
+
+@app.exception_handler(KeyError)
+async def not_found_handler(request: Request, exc: KeyError):
+    return JSONResponse(status_code=404, content={"detail": str(exc.args[0]) if exc.args else "Not found"})
 
 
 @app.exception_handler(Exception)
@@ -89,80 +95,29 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
+store = Store()
 engine = ExecutionEngine()
-projects: dict[str, Project] = {}
-recipes_db: dict[str, Recipe] = {}
+loom = Loom(store, engine)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOOM_DIR = os.environ.get("LOOM_HOME") or os.path.join(BASE_DIR, ".loom")
-PROJECTS_DIR = os.path.join(LOOM_DIR, "projects")
-RECIPES_DIR = os.path.join(LOOM_DIR, "recipes")
-
-
-def _compute_source_hash(file_path: str) -> str:
-    if sources.is_remote(file_path):
-        return "unknown"
-    hasher = hashlib.md5()
-    try:
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""):
-                hasher.update(chunk)
-        return hasher.hexdigest()
-    except OSError:
-        return "unknown"
-
-
-def _compute_schema_hash(schema: dict) -> str:
-    schema_str = str(sorted((k, str(v)) for k, v in schema.items()))
-    return hashlib.md5(schema_str.encode()).hexdigest()[:16]
-
-
-def _atomic_write(path: str, text: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        raise
-
-
-def _save_project(project: Project):
-    _atomic_write(os.path.join(PROJECTS_DIR, project.id, "project.json"), project.model_dump_json())
-
-
-def _save_recipe(recipe: Recipe):
-    _atomic_write(os.path.join(RECIPES_DIR, f"{recipe.id}.json"), recipe.model_dump_json())
+# Kept for tests and backwards compatibility.
+projects: dict[str, Project] = store.projects
+recipes_db: dict[str, Recipe] = store.recipes
+LOOM_DIR = store.home
+PROJECTS_DIR = store.projects_dir
+RECIPES_DIR = store.recipes_dir
 
 
 def _load_persisted_state():
-    if os.path.exists(PROJECTS_DIR):
-        for pid in os.listdir(PROJECTS_DIR):
-            p_path = os.path.join(PROJECTS_DIR, pid, "project.json")
-            if os.path.exists(p_path):
-                with open(p_path, "r") as f:
-                    try:
-                        project = Project.model_validate_json(f.read())
-                        projects[project.id] = project
-                    except Exception as e:
-                        print(f"Failed to load project {pid}: {e}")
+    store.all()
+    store.load_recipes()
 
-    if os.path.exists(RECIPES_DIR):
-        for r_file in os.listdir(RECIPES_DIR):
-            if r_file.endswith(".json"):
-                with open(os.path.join(RECIPES_DIR, r_file), "r") as f:
-                    try:
-                        recipe = Recipe.model_validate_json(f.read())
-                        recipes_db[recipe.id] = recipe
-                    except Exception as e:
-                        print(f"Failed to load recipe {r_file}: {e}")
+
+def _save_project(project: Project):
+    store.save(project)
 
 
 def _get_project(project_id: str) -> Project:
-    project = projects.get(project_id)
+    project = store.get(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
@@ -177,20 +132,11 @@ def _require_node(project: Project, node_id: str) -> Node:
 
 def _path_ops(project: Project, node_id: str) -> list[Operation]:
     _require_node(project, node_id)
-    path_nodes = []
-    current_id = node_id
-    while current_id:
-        node = project.nodes.get(current_id)
-        if not node:
-            break
-        path_nodes.insert(0, node)
-        current_id = node.parent_id
-    return [n.operation for n in path_nodes]
+    return [n.operation for n in loom.path_nodes(project, node_id)]
 
 
-def _head_node_id(project: Project) -> str:
-    branch = project.branches.get(project.head)
-    return branch.head_node_id if branch else project.head
+def _root_id(project: Project) -> str:
+    return loom.root_id(project)
 
 
 # --------------------------------------------------------------------- models
@@ -198,6 +144,7 @@ class LoadRequest(BaseModel):
     path: str
     options: dict[str, Any] = {}
     name: Optional[str] = None
+    snapshot: Optional[bool] = None
 
 
 class InspectRequest(BaseModel):
@@ -258,12 +205,16 @@ class ChartRequest(BaseModel):
 
 class ExportRequest(BaseModel):
     node_id: str
-    target: Literal["polars"] = "polars"
+    target: Literal["polars", "pandas"] = "polars"
 
 
 class ExportDataRequest(BaseModel):
     node_id: str
     format: Literal["csv", "tsv", "parquet", "xlsx", "json", "ndjson", "ipc"] = "csv"
+
+
+class AcceptSourceRequest(BaseModel):
+    snapshot: bool = False
 
 
 # ------------------------------------------------------------------- general
@@ -293,51 +244,29 @@ def inspect_source(req: InspectRequest):
         raise HTTPException(status_code=404, detail="File not found")
     fmt = sources.infer_format(path, req.options)
     tables = sources.list_tables(path, fmt) if not sources.is_remote(path) else []
-    return {"path": path, "format": fmt, "tables": tables, "needs_table": fmt in ("sqlite", "duckdb")}
+    size = os.path.getsize(path) if not sources.is_remote(path) else None
+    return {"path": path, "format": fmt, "tables": tables, "needs_table": fmt in ("sqlite", "duckdb"),
+            "size_bytes": size, "snapshot_by_default": loom._should_snapshot(path, req.options, None)}
 
 
 # ------------------------------------------------------------------- projects
-def _create_project(path: str, options: dict[str, Any], name: Optional[str] = None) -> Project:
+def _create_project(path: str, options: dict[str, Any], name: Optional[str] = None,
+                    snapshot: Optional[bool] = None, save: bool = True) -> Project:
     path = os.path.expanduser(path.strip())
     if not sources.source_exists(path):
         raise HTTPException(status_code=404, detail="File not found")
-    options = {k: v for k, v in (options or {}).items() if v not in (None, "")}
-    sources.infer_format(path, options)  # raises a clear error for unknown formats
-
-    lf = engine.load_source(path, options)
-    schema_dict = {n: str(d) for n, d in lf.collect_schema().items()}
-
-    root_node_id = str(uuid.uuid4())
-    root_node = Node(
-        id=root_node_id,
-        parent_id=None,
-        operation=Operation(id=str(uuid.uuid4()), type="ingest", params={}, label="Load Data"),
-        schema_hash=_compute_schema_hash(schema_dict),
-    )
-    return Project(
-        id=str(uuid.uuid4()),
-        source_path=path,
-        source_hash=_compute_source_hash(path),
-        source_options=options,
-        name=name or os.path.basename(path.split("?", 1)[0]) or path,
-        nodes={root_node_id: root_node},
-        branches={"main": Branch(name="main", head_node_id=root_node_id)},
-        head="main",
-    )
+    return loom.create_project(path, options, name=name, snapshot=snapshot, save=save)
 
 
 @app.post("/project/load")
 def load_project(req: LoadRequest):
-    project = _create_project(req.path, req.options, req.name)
-    projects[project.id] = project
-    _save_project(project)
-    return project
+    return _create_project(req.path, req.options, req.name, req.snapshot)
 
 
 @app.get("/projects")
 def list_projects():
     out = []
-    for p in projects.values():
+    for p in store.all():
         out.append({
             "id": p.id,
             "name": p.name or os.path.basename(p.source_path),
@@ -345,7 +274,9 @@ def list_projects():
             "created_at": p.created_at,
             "steps": len(p.nodes) - 1,
             "branches": len(p.branches),
-            "source_exists": sources.source_exists(p.source_path),
+            "versions": len(p.versions),
+            "pinned": bool(p.snapshot_path),
+            "source_exists": bool(p.snapshot_path and os.path.exists(p.snapshot_path)) or sources.source_exists(p.source_path),
         })
     out.sort(key=lambda r: r["created_at"], reverse=True)
     return out
@@ -354,11 +285,8 @@ def list_projects():
 @app.delete("/project/{id}")
 def delete_project(id: str):
     _get_project(id)
-    projects.pop(id, None)
     engine.invalidate_project(id)
-    project_dir = os.path.join(PROJECTS_DIR, id)
-    if os.path.isdir(project_dir):
-        shutil.rmtree(project_dir)
+    store.delete(id)
     return {"status": "deleted"}
 
 
@@ -367,56 +295,22 @@ def get_tree(id: str):
     return _get_project(id)
 
 
+@app.get("/project/{id}/source")
+def source_status(id: str):
+    return loom.source_status(_get_project(id))
+
+
+@app.post("/project/{id}/source/accept")
+def accept_source(id: str, req: AcceptSourceRequest):
+    """Make the file as it is now the new baseline, optionally pinning a snapshot of it."""
+    return loom.accept_source(_get_project(id), snapshot=req.snapshot)
+
+
 @app.post("/project/{id}/op")
 def add_op(id: str, req: OpRequest):
     project = _get_project(id)
     _require_node(project, req.parent_node_id)
-
-    raw = dict(req.operation)
-    if not raw.get("id"):
-        raw["id"] = str(uuid.uuid4())
-    raw.setdefault("params", {})
-    raw.setdefault("label", raw.get("type", ""))
-    if not raw.get("type"):
-        raise HTTPException(status_code=400, detail="Operation type is required")
-    if raw["type"] == "ingest":
-        raise HTTPException(status_code=400, detail="'ingest' can only be the first step")
-    op = Operation(**raw)
-
-    parent_lf = engine.build_plan(project, req.parent_node_id)
-    op = engine.normalize_operation(parent_lf, op)
-    new_lf = engine._apply_operation(parent_lf, op)
-    schema_dict = {name: str(dtype) for name, dtype in new_lf.collect_schema().items()}
-    # Run a small slice now so data errors surface before the step is saved.
-    new_lf.head(50).collect()
-
-    new_node = Node(
-        id=str(uuid.uuid4()),
-        parent_id=req.parent_node_id,
-        operation=op,
-        schema_hash=_compute_schema_hash(schema_dict),
-    )
-    project.nodes[new_node.id] = new_node
-
-    # Resolve which branch is being advanced
-    matching_branches = [name for name, b in project.branches.items() if b.head_node_id == req.parent_node_id]
-    if matching_branches:
-        branch_to_advance = project.head if project.head in matching_branches else matching_branches[0]
-        project.branches[branch_to_advance].head_node_id = new_node.id
-        project.head = branch_to_advance
-    else:
-        branch_to_advance = f"branch-{str(uuid.uuid4())[:8]}"
-        project.branches[branch_to_advance] = Branch(
-            name=branch_to_advance,
-            head_node_id=new_node.id,
-            forked_from_node_id=req.parent_node_id,
-        )
-        project.head = branch_to_advance
-    # A new step starts a new future: nothing left to redo on this branch.
-    project.redo_stack.pop(branch_to_advance, None)
-
-    _save_project(project)
-    return new_node
+    return loom.add_step(project, req.parent_node_id, req.operation)
 
 
 @app.get("/project/{id}/data")
@@ -454,7 +348,8 @@ def get_chart(id: str, req: ChartRequest):
 @app.post("/project/{id}/export/code")
 def export_code(id: str, req: ExportRequest):
     project = _get_project(id)
-    code = generate_script(_path_ops(project, req.node_id), req.target, project.source_path, project.source_options)
+    code = generate_script(_path_ops(project, req.node_id), req.target, project.source_path, project.source_options,
+                           snapshot=project.snapshot_path, sha256=project.source_sha256)
     return {"code": code}
 
 
@@ -508,11 +403,11 @@ def checkout(id: str, req: CheckoutRequest):
 
 
 def _undo_state(project: Project) -> dict:
-    head_node = project.nodes.get(_head_node_id(project))
+    head_node = project.nodes.get(loom.head_node_id(project))
     return {
         "head": project.head,
-        "node_id": _head_node_id(project),
-        "can_undo": bool(head_node and head_node.parent_id),
+        "node_id": loom.head_node_id(project),
+        "can_undo": bool(project.reflog.get(project.head)) or bool(head_node and head_node.parent_id),
         "can_redo": bool(project.redo_stack.get(project.head)),
         "project": project,
     }
@@ -521,13 +416,19 @@ def _undo_state(project: Project) -> dict:
 @app.post("/project/{id}/undo")
 def undo(id: str):
     project = _get_project(id)
-    current = _head_node_id(project)
+    current = loom.head_node_id(project)
     node = _require_node(project, current)
-    if not node.parent_id:
-        raise HTTPException(400, "Nothing to undo")
     if project.head in project.branches:
-        project.branches[project.head].head_node_id = node.parent_id
+        log = project.reflog.get(project.head) or []
+        # Undo restores where the branch pointed before its last change (add,
+        # edit, delete, merge...). Older projects without a log step back one.
+        previous = log.pop() if log else node.parent_id
+        if not previous:
+            raise HTTPException(400, "Nothing to undo")
+        project.branches[project.head].head_node_id = previous
     else:
+        if not node.parent_id:
+            raise HTTPException(400, "Nothing to undo")
         project.head = node.parent_id
     project.redo_stack.setdefault(project.head, []).append(current)
     _save_project(project)
@@ -541,13 +442,13 @@ def redo(id: str):
     if not stack:
         raise HTTPException(400, "Nothing to redo")
     target = stack.pop()
-    current = _head_node_id(project)
-    node = project.nodes.get(target)
-    if not node or node.parent_id != current:
+    current = loom.head_node_id(project)
+    if target not in project.nodes:
         project.redo_stack.pop(project.head, None)
         _save_project(project)
         raise HTTPException(400, "Nothing to redo")
     if project.head in project.branches:
+        project.reflog.setdefault(project.head, []).append(current)
         project.branches[project.head].head_node_id = target
         if not stack:
             project.redo_stack.pop(project.head, None)
@@ -564,7 +465,7 @@ def redo(id: str):
 # -------------------------------------------------------------------- recipes
 @app.get("/recipes")
 def list_recipes():
-    return list(recipes_db.values())
+    return store.load_recipes()
 
 
 @app.post("/project/{id}/recipe/save")
@@ -577,46 +478,29 @@ def save_recipe(id: str, req: SaveRecipeRequest):
     if not ops_list:
         raise HTTPException(400, "This step has no transformations to save")
     recipe = Recipe(
-        id=str(uuid.uuid4()),
+        id=new_id(),
         name=name,
         operations=ops_list,
         # The recipe's input contract: the columns of the file it was built on.
         expected_schema=engine.get_schema(project, _root_id(project)),
         origin_hash=project.source_hash,
     )
-    recipes_db[recipe.id] = recipe
-    _save_recipe(recipe)
+    store.save_recipe(recipe)
     return recipe
-
-
-def _root_id(project: Project) -> str:
-    return next(n.id for n in project.nodes.values() if n.parent_id is None)
 
 
 @app.delete("/recipe/{recipe_id}")
 def delete_recipe(recipe_id: str):
-    if recipe_id not in recipes_db:
+    if recipe_id not in store.recipes:
         raise HTTPException(404, "Recipe not found")
-    recipes_db.pop(recipe_id)
-    path = os.path.join(RECIPES_DIR, f"{recipe_id}.json")
-    if os.path.exists(path):
-        os.remove(path)
+    store.delete_recipe(recipe_id)
     return {"status": "deleted"}
 
 
-@app.post("/recipe/apply")
-def apply_recipe(req: ApplyRecipeRequest):
-    path = os.path.expanduser(req.new_source_path.strip())
-    if not sources.source_exists(path):
-        raise HTTPException(status_code=404, detail="File not found")
-    recipe = recipes_db.get(req.recipe_id)
-    if not recipe:
-        raise HTTPException(status_code=404, detail="Recipe not found")
-
-    # Validate the new file before creating anything.
-    actual_schema = {n: str(d) for n, d in engine.load_source(path, req.options).collect_schema().items()}
+def validate_recipe_input(recipe: Recipe, path: str, options: dict) -> list[str]:
+    actual_schema = {n: str(d) for n, d in engine.load_source(path, options).collect_schema().items()}
     warnings = []
-    source_hash = _compute_source_hash(path)
+    source_hash = file_digest(path, "md5") if not sources.is_remote(path) else "unknown"
     if recipe.origin_hash != "unknown" and source_hash != recipe.origin_hash:
         warnings.append("This file is different from the one the recipe was built on.")
     for col, dtype in recipe.expected_schema.items():
@@ -624,27 +508,39 @@ def apply_recipe(req: ApplyRecipeRequest):
             warnings.append(f"Missing column '{col}'.")
         elif actual_schema[col] != dtype:
             warnings.append(f"Column '{col}' expected {dtype} but found {actual_schema[col]} in the new file.")
+    return warnings
+
+
+@app.post("/recipe/apply")
+def apply_recipe(req: ApplyRecipeRequest):
+    path = os.path.expanduser(req.new_source_path.strip())
+    if not sources.source_exists(path):
+        raise HTTPException(status_code=404, detail="File not found")
+    recipe = store.recipes.get(req.recipe_id) or next((r for r in store.load_recipes() if r.id == req.recipe_id), None)
+    if not recipe:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+
+    # Validate the new file before creating anything.
+    warnings = validate_recipe_input(recipe, path, req.options)
     if warnings and not req.force:
         return {"status": "warning", "warnings": warnings}
 
-    project = _create_project(path, req.options)
+    project = _create_project(path, req.options, save=False)
     current_parent_id = _root_id(project)
     lf = engine.build_plan(project, current_parent_id)
     for i, op in enumerate(recipe.operations):
-        new_op = Operation(id=str(uuid.uuid4()), type=op.type, params=op.params, label=op.label, engine_hint=op.engine_hint)
+        new_op = Operation(id=new_id(), type=op.type, params=op.params, label=op.label, engine_hint=op.engine_hint)
         try:
             lf = engine._apply_operation(lf, new_op)
             schema_dict = {name: str(dtype) for name, dtype in lf.collect_schema().items()}
             lf.head(10).collect()
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Step {i + 1} ('{op.label or op.type}') failed: {e}")
-        new_node = Node(id=str(uuid.uuid4()), parent_id=current_parent_id, operation=new_op,
-                        schema_hash=_compute_schema_hash(schema_dict))
+        new_node = Node(id=new_id(), parent_id=current_parent_id, operation=new_op, schema_hash=schema_hash(schema_dict))
         project.nodes[new_node.id] = new_node
         current_parent_id = new_node.id
 
     project.branches["main"].head_node_id = current_parent_id
-    projects[project.id] = project
     _save_project(project)
     return {"status": "success", "project": project, "warnings": warnings}
 
