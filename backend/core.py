@@ -265,6 +265,11 @@ class Loom:
     def _make_node(self, project: Project, parent_id: str, op: Operation) -> Node:
         parent_lf = self.engine.build_plan(project, parent_id)
         op = self.engine.normalize_operation(parent_lf, op)
+        if op.type == "edit_cell" and op.params.get("match") is not None:
+            hits = parent_lf.filter(ops.edit_match_expr(op.params)).select(pl.len()).collect().item()
+            if hits == 0:
+                key, val = next(iter(op.params["match"].items()))
+                raise ValueError(f"Edit of '{op.params['column']}': the row ({key}={val}, ...) isn't in the data at this step")
         new_lf = self.engine._apply_operation(parent_lf, op)
         schema = {name: str(dtype) for name, dtype in new_lf.collect_schema().items()}
         # Run a small slice now so data errors surface before the step is saved.

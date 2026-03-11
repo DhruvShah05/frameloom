@@ -549,3 +549,37 @@ def test_exported_code_records_provenance(people):
     pid, root = _load(people)
     code = client.post(f"/project/{pid}/export/code", json={"node_id": root}).json()["code"]
     assert projects[pid].source_sha256 in code and "frozen copy" in code
+
+
+# ------------------------------------------------------- row-following edits
+
+def _row(pid, node, i):
+    return client.get(f"/project/{pid}/data", params={"node_id": node, "offset": i, "limit": 1}).json()["data"][0]
+
+
+def test_edit_follows_the_row_not_its_position(people):
+    pid, root = _load(people)
+    target = _row(pid, root, 2)  # Charlie, age null
+    sorted_node = _ok_op(pid, root, "sort", by=[{"column": "id", "descending": True}])
+    node = _ok_op(pid, sorted_node, "edit_cell", row=target, column="age", value=50)
+    df = _engine_df(pid, node)
+    assert df.filter(pl.col("name") == "Charlie")["age"].to_list() == [50]
+    assert df["age"].to_list().count(50) == 1
+    _assert_parity(pid, node)
+    assert "where id=3" in projects[pid].nodes[node].operation.label
+
+
+def test_edit_with_dates_and_nulls_matches_exported_code(sales):
+    pid, root = _load(sales)
+    target = _row(pid, root, 2)  # units is null here
+    node = _ok_op(pid, root, "edit_cell", row=target, column="units", value=11)
+    assert _engine_df(pid, node)["units"][2] == 11
+    _assert_parity(pid, node)
+
+
+def test_edit_of_a_row_that_is_not_there_is_rejected(people):
+    pid, root = _load(people)
+    target = _row(pid, root, 0)
+    filtered = _ok_op(pid, root, "filter_rows", column="id", operator="gt", value=1)
+    r = _op(pid, filtered, "edit_cell", row=target, column="age", value=1)
+    assert r.status_code == 400 and "isn't in the data" in r.json()["detail"]

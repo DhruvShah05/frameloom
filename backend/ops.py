@@ -633,13 +633,59 @@ register(
 )
 
 
+_MATCH_SCALAR = ("Int", "UInt", "Float", "String", "Boolean", "Date", "Datetime", "Categorical", "Enum")
+
+
+def _matchable(dtype_name: str | None) -> bool:
+    return bool(dtype_name) and dtype_name.startswith(_MATCH_SCALAR)
+
+
 def _edit_norm(p, s):
-    if p.get("row_index") in (None, "") or not p.get("column"):
-        raise ValueError("edit_cell needs row_index and column")
+    """An edit remembers the row's original values, not its position.
+
+    Replaying after earlier steps change (a new filter, a different sort)
+    still finds the same row; if it no longer exists, replay fails loudly.
+    Older edits saved with only ``row_index`` keep working positionally.
+    """
+    if not p.get("column"):
+        raise ValueError("edit_cell needs a column")
     _check_columns(s, [p["column"]], "edit_cell")
     dtype = s.get(p["column"]) if s is not None else None
-    return {"row_index": int(p["row_index"]), "column": p["column"],
-            "value": cast_value(p.get("value"), dtype), "dtype": _dtype_name(dtype)}
+    out = {"column": p["column"], "value": cast_value(p.get("value"), dtype), "dtype": _dtype_name(dtype)}
+    if p.get("match") is not None or p.get("row") is not None:
+        raw = p.get("match") if p.get("match") is not None else p["row"]
+        match, dtypes = {}, {}
+        for col, val in raw.items():
+            if s is not None and col not in s:
+                continue
+            dname = _dtype_name(s.get(col)) if s is not None else (p.get("match_dtypes") or {}).get(col)
+            if not _matchable(dname):
+                continue
+            match[col] = cast_value(val, s.get(col)) if s is not None else val
+            dtypes[col] = dname
+        if not match:
+            raise ValueError("edit_cell: the row has no columns that can identify it")
+        out.update(match=match, match_dtypes=dtypes)
+    elif p.get("row_index") not in (None, ""):
+        out["row_index"] = int(p["row_index"])
+    else:
+        raise ValueError("edit_cell needs the row (its values) or a row_index")
+    return out
+
+
+def _match_lit(value, dname):
+    if value is None:
+        return pl.lit(None)
+    if dname == "Date" and isinstance(value, str):
+        return pl.lit(value).str.to_date()
+    if dname and dname.startswith("Datetime") and isinstance(value, str):
+        return pl.lit(value).str.to_datetime()
+    return pl.lit(value)
+
+
+def edit_match_expr(p) -> pl.Expr:
+    dtypes = p.get("match_dtypes") or {}
+    return pl.all_horizontal([pl.col(c).eq_missing(_match_lit(v, dtypes.get(c))) for c, v in p["match"].items()])
 
 
 def _edit_apply(lf, p, s):
@@ -648,9 +694,18 @@ def _edit_apply(lf, p, s):
     value = _lit_expr(cast_value(p.get("value"), dtype), dtype)
     if dtype is not None:
         value = value.cast(dtype, strict=False)
-    return lf.with_columns(
-        pl.when(pl.int_range(pl.len()) == int(p["row_index"])).then(value).otherwise(pl.col(col)).alias(col)
-    )
+    cond = edit_match_expr(p) if p.get("match") is not None else pl.int_range(pl.len()) == int(p["row_index"])
+    return lf.with_columns(pl.when(cond).then(value).otherwise(pl.col(col)).alias(col))
+
+
+def _match_lit_code(value, dname):
+    if value is None:
+        return "None"
+    if dname == "Date" and isinstance(value, str):
+        return f"pl.lit({value!r}).str.to_date()"
+    if dname and dname.startswith("Datetime") and isinstance(value, str):
+        return f"pl.lit({value!r}).str.to_datetime()"
+    return repr(value)
 
 
 def _edit_code(p):
@@ -661,14 +716,29 @@ def _edit_code(p):
         value = f"pl.lit({value}).cast(pl.{dt})" if not value.startswith("pl.") else f"{value}.cast(pl.{dt})"
     elif value == "None":
         value = "pl.lit(None)"
-    return [f"df = df.with_columns(pl.when(pl.int_range(pl.len()) == {int(p['row_index'])}).then({value}).otherwise({_c(col)}).alias({col!r}))"]
+    if p.get("match") is not None:
+        dtypes = p.get("match_dtypes") or {}
+        conds = ", ".join(f"{_c(c)}.eq_missing({_match_lit_code(v, dtypes.get(c))})" for c, v in p["match"].items())
+        cond = f"pl.all_horizontal([{conds}])"
+    else:
+        cond = f"pl.int_range(pl.len()) == {int(p['row_index'])}"
+    return [f"df = df.with_columns(pl.when({cond}).then({value}).otherwise({_c(col)}).alias({col!r}))"]
+
+
+def _edit_describe(p):
+    if p.get("match"):
+        key, val = next(iter(p["match"].items()))
+        where = f"where {key}={val}"
+    else:
+        where = f"row {int(p.get('row_index', 0)) + 1}"
+    return f"Edit {p.get('column')} {where} → {p.get('value')}"
 
 
 register(
     "edit_cell",
     apply=_edit_apply,
     code=_edit_code,
-    describe=lambda p: f"Edit {p.get('column')} row {int(p.get('row_index', 0)) + 1} → {p.get('value')}",
+    describe=_edit_describe,
     normalize=_edit_norm,
 )
 
