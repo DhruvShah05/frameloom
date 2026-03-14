@@ -313,3 +313,162 @@ class Loom:
         project.head = branch
         self.store.save(project)
         return node
+
+    # ============================================================== history
+    def _branch_for_rewrite(self, project: Project, branch: Optional[str]) -> str:
+        branch = branch or project.head
+        if branch not in project.branches:
+            raise HistoryError("Switch to a branch first: history can only be rewritten on a branch")
+        return branch
+
+    def _tail_after(self, project: Project, branch: str, node_id: str) -> list[Node]:
+        path = self.path_nodes(project, project.branches[branch].head_node_id)
+        ids = [n.id for n in path]
+        if node_id not in ids:
+            raise HistoryError(f"That step isn't part of branch '{branch}'")
+        return path[ids.index(node_id) + 1:]
+
+    def _replay(self, project: Project, base_id: str, operations: list, fresh_labels: int = 0) -> str:
+        """Re-run steps on top of base_id. All-or-nothing.
+
+        ``operations`` holds Nodes (copied steps, which keep a link to where
+        they came from) or Operations (new steps). The first ``fresh_labels``
+        get a newly generated label (they were just edited).
+        """
+        created: list[str] = []
+        parent = base_id
+        try:
+            for i, item in enumerate(operations):
+                origin = None
+                if isinstance(item, Node):
+                    origin = item.origin_id or item.id
+                    op = item.operation
+                else:
+                    op = item
+                clone = Operation(id=new_id(), type=op.type, params=dict(op.params),
+                                  label="" if i < fresh_labels else op.label, engine_hint=op.engine_hint)
+                try:
+                    node = self._make_node(project, parent, clone)
+                except Exception as e:
+                    raise HistoryError(f"Step {i + 1} of the replay ('{op.label or op.type}') failed: {e}") from e
+                if isinstance(item, Node):
+                    node.note = item.note
+                if origin and i >= fresh_labels:
+                    node.origin_id = origin
+                project.nodes[node.id] = node
+                created.append(node.id)
+                parent = node.id
+        except BaseException:
+            for nid in created:
+                project.nodes.pop(nid, None)
+            raise
+        return parent
+
+    def _finish(self, project: Project, branch: str, tip: str) -> dict:
+        self._move_branch(project, branch, tip)
+        project.head = branch
+        self.store.save(project)
+        return {"node_id": tip, "branch": branch, "project": project}
+
+    def edit_step(self, project: Project, node_id: str, params: dict, branch: Optional[str] = None) -> dict:
+        """Change a step's settings and replay everything after it."""
+        branch = self._branch_for_rewrite(project, branch)
+        node = project.nodes.get(node_id)
+        if not node or node.parent_id is None:
+            raise HistoryError("The first step (loading the data) can't be edited")
+        tail = self._tail_after(project, branch, node_id)
+        edited = node.operation.model_copy(update={"params": dict(params)})
+        tip = self._replay(project, node.parent_id, [edited] + tail, fresh_labels=1)
+        return self._finish(project, branch, tip)
+
+    def delete_step(self, project: Project, node_id: str, branch: Optional[str] = None) -> dict:
+        """Remove a step and replay everything after it."""
+        branch = self._branch_for_rewrite(project, branch)
+        node = project.nodes.get(node_id)
+        if not node or node.parent_id is None:
+            raise HistoryError("The first step (loading the data) can't be deleted")
+        tail = self._tail_after(project, branch, node_id)
+        tip = self._replay(project, node.parent_id, tail)
+        return self._finish(project, branch, tip)
+
+    def insert_step(self, project: Project, after_id: str, operation: dict, branch: Optional[str] = None) -> dict:
+        """Add a step in the middle of a branch and replay what follows."""
+        branch = self._branch_for_rewrite(project, branch)
+        tail = self._tail_after(project, branch, after_id)
+        op = self.build_operation(operation)
+        tip = self._replay(project, after_id, [op] + tail, fresh_labels=1)
+        return self._finish(project, branch, tip)
+
+    def cherry_pick(self, project: Project, node_ids: list[str], branch: Optional[str] = None) -> dict:
+        """Copy steps (from any branch) onto the end of a branch."""
+        branch = self._branch_for_rewrite(project, branch)
+        if not node_ids:
+            raise HistoryError("Choose at least one step to copy")
+        operations = []
+        for nid in node_ids:
+            node = project.nodes.get(nid)
+            if not node:
+                raise KeyError(f"Step '{nid}' not found")
+            if node.parent_id is None:
+                raise HistoryError("The load step can't be copied")
+            operations.append(node)
+        tip = self._replay(project, project.branches[branch].head_node_id, operations)
+        return self._finish(project, branch, tip)
+
+    def merge_base(self, project: Project, a: str, b: str) -> str:
+        ancestors = {n.id for n in self.path_nodes(project, a)}
+        for node in reversed(self.path_nodes(project, b)):
+            if node.id in ancestors:
+                return node.id
+        raise HistoryError("These steps share no history")
+
+    def merge(self, project: Project, source: str, into: Optional[str] = None) -> dict:
+        """Bring another branch's steps into this one by replaying them on top."""
+        into = self._branch_for_rewrite(project, into)
+        if source not in project.branches:
+            raise KeyError(f"Branch '{source}' not found")
+        if source == into:
+            raise HistoryError("Can't merge a branch into itself")
+        src_head = project.branches[source].head_node_id
+        dst_head = project.branches[into].head_node_id
+        base = self.merge_base(project, src_head, dst_head)
+        if base == src_head:
+            raise HistoryError(f"'{into}' already has every step from '{source}'")
+        if base == dst_head:  # nothing new on the target: just move it forward
+            result = self._finish(project, into, src_head)
+            result.update(fast_forward=True, replayed=0)
+            return result
+        # Skip steps the target already has (copied earlier by a merge or cherry-pick).
+        have = set()
+        for n in self.path_nodes(project, dst_head):
+            have.add(n.id)
+            if n.origin_id:
+                have.add(n.origin_id)
+        new_steps = [n for n in self._tail_after(project, source, base)
+                     if n.id not in have and (n.origin_id or n.id) not in have]
+        if not new_steps:
+            raise HistoryError(f"'{into}' already has every step from '{source}'")
+        tip = self._replay(project, dst_head, new_steps)
+        result = self._finish(project, into, tip)
+        result.update(fast_forward=False, replayed=len(new_steps))
+        return result
+
+    def set_note(self, project: Project, node_id: str, note: str) -> Node:
+        node = project.nodes.get(node_id)
+        if not node:
+            raise KeyError(f"Step '{node_id}' not found")
+        node.note = note.strip() or None
+        self.store.save(project)
+        return node
+
+    def delete_branch(self, project: Project, name: str) -> None:
+        if name not in project.branches:
+            raise KeyError(f"Branch '{name}' not found")
+        if name == project.head:
+            raise HistoryError("Switch to another branch before deleting this one")
+        if len(project.branches) == 1:
+            raise HistoryError("A project needs at least one branch")
+        del project.branches[name]
+        project.reflog.pop(name, None)
+        project.redo_stack.pop(name, None)
+        self.store.save(project)

@@ -217,6 +217,34 @@ class AcceptSourceRequest(BaseModel):
     snapshot: bool = False
 
 
+class EditStepRequest(BaseModel):
+    params: dict[str, Any]
+    branch: Optional[str] = None
+
+
+class InsertStepRequest(BaseModel):
+    operation: dict[str, Any]
+    branch: Optional[str] = None
+
+
+class BranchOnlyRequest(BaseModel):
+    branch: Optional[str] = None
+
+
+class NoteRequest(BaseModel):
+    note: str = ""
+
+
+class CherryPickRequest(BaseModel):
+    node_ids: list[str]
+    branch: Optional[str] = None
+
+
+class MergeRequest(BaseModel):
+    source: str
+    into: Optional[str] = None
+
+
 # ------------------------------------------------------------------- general
 @app.get("/health")
 def health():
@@ -390,6 +418,45 @@ def create_branch(id: str, req: BranchRequest):
     project.head = name
     _save_project(project)
     return branch
+
+
+# ------------------------------------------------------------ history edits
+@app.post("/project/{id}/step/{node_id}/edit")
+def edit_step(id: str, node_id: str, req: EditStepRequest):
+    """Change a step's settings; later steps on the branch are replayed."""
+    return loom.edit_step(_get_project(id), node_id, req.params, req.branch)
+
+
+@app.post("/project/{id}/step/{node_id}/delete")
+def delete_step(id: str, node_id: str, req: BranchOnlyRequest):
+    return loom.delete_step(_get_project(id), node_id, req.branch)
+
+
+@app.post("/project/{id}/step/{node_id}/insert")
+def insert_step(id: str, node_id: str, req: InsertStepRequest):
+    """Insert a step after node_id (instead of branching) and replay the rest."""
+    return loom.insert_step(_get_project(id), node_id, req.operation, req.branch)
+
+
+@app.post("/project/{id}/step/{node_id}/note")
+def note_step(id: str, node_id: str, req: NoteRequest):
+    return loom.set_note(_get_project(id), node_id, req.note)
+
+
+@app.post("/project/{id}/cherry-pick")
+def cherry_pick(id: str, req: CherryPickRequest):
+    return loom.cherry_pick(_get_project(id), req.node_ids, req.branch)
+
+
+@app.post("/project/{id}/merge")
+def merge(id: str, req: MergeRequest):
+    return loom.merge(_get_project(id), req.source, req.into)
+
+
+@app.delete("/project/{id}/branch/{name:path}")
+def delete_branch(id: str, name: str):
+    loom.delete_branch(_get_project(id), name)
+    return {"status": "deleted"}
 
 
 @app.post("/project/{id}/checkout")

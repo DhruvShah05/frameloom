@@ -24,6 +24,9 @@ class Node(BaseModel):
     row_count: Optional[int] = None
     # Free-text note on this step ("why I did this").
     note: Optional[str] = None
+    # Set when this step is a copy (edit replay, cherry-pick, merge): the
+    # step it was copied from, so merges can tell what a branch already has.
+    origin_id: Optional[str] = None
 
 
 class Branch(BaseModel):
