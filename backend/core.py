@@ -472,3 +472,50 @@ class Loom:
         project.reflog.pop(name, None)
         project.redo_stack.pop(name, None)
         self.store.save(project)
+
+    # ============================================================= versions
+    VERSION_NAME_RE = r"^[\w.\-]{1,64}$"
+
+    def create_version(self, project: Project, name: str, ref: Optional[str] = None, message: str = "",
+                       metrics: Optional[dict] = None, notes: str = "") -> "Version":
+        import re
+
+        from .models import Version
+
+        name = (name or "").strip()
+        if not re.match(self.VERSION_NAME_RE, name):
+            raise ValueError("Version names may use letters, numbers, '.', '-' and '_' (max 64), e.g. v1 or baseline")
+        if name in project.versions:
+            raise ValueError(f"Version '{name}' already exists - versions never move; pick a new name")
+        if name in project.branches:
+            raise ValueError(f"'{name}' is already a branch name")
+        node_id = self.resolve(project, ref)
+        branch = project.head if project.head in project.branches and project.branches[project.head].head_node_id == node_id else None
+        version = Version(name=name, node_id=node_id, message=message.strip(), branch=branch,
+                          metrics=dict(metrics or {}), notes=notes)
+        project.versions[name] = version
+        self.store.save(project)
+        return version
+
+    def update_version(self, project: Project, name: str, message: Optional[str] = None,
+                       notes: Optional[str] = None, metrics: Optional[dict] = None, replace_metrics: bool = False):
+        if name not in project.versions:
+            raise KeyError(f"Version '{name}' not found")
+        v = project.versions[name]
+        if message is not None:
+            v.message = message.strip()
+        if notes is not None:
+            v.notes = notes
+        if metrics is not None:
+            bad = [k for k, val in metrics.items() if not isinstance(val, (int, float, str, bool)) and val is not None]
+            if bad:
+                raise ValueError(f"Metric values must be numbers, text or true/false: {', '.join(bad)}")
+            v.metrics = dict(metrics) if replace_metrics else {**v.metrics, **metrics}
+        self.store.save(project)
+        return v
+
+    def delete_version(self, project: Project, name: str) -> None:
+        if name not in project.versions:
+            raise KeyError(f"Version '{name}' not found")
+        del project.versions[name]
+        self.store.save(project)

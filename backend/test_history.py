@@ -163,3 +163,43 @@ def test_the_load_step_cannot_be_edited_or_deleted(pid_chain):
     pid, (root, *_rest) = pid_chain
     assert client.post(f"/project/{pid}/step/{root}/delete", json={}).status_code == 400
     assert client.post(f"/project/{pid}/step/{root}/edit", json={"params": {}}).status_code == 400
+
+
+# ------------------------------------------------------------------ versions
+
+def test_versions_pin_a_step_and_carry_metrics(pid_chain):
+    pid, (root, f, strip, srt) = pid_chain
+    r = client.post(f"/project/{pid}/versions", json={"name": "baseline", "message": "first clean pass"})
+    assert r.status_code == 200, r.text
+    assert r.json()["node_id"] == srt and r.json()["branch"] == "main"
+    # Versions never move, even when the branch history is rewritten.
+    client.post(f"/project/{pid}/step/{f}/delete", json={})
+    assert projects[pid].versions["baseline"].node_id == srt
+    assert df_at(pid, srt)["id"].to_list() == [5, 4, 3, 2]
+
+    client.patch(f"/project/{pid}/versions/baseline", json={"metrics": {"val_auc": 0.81}})
+    client.patch(f"/project/{pid}/versions/baseline", json={"metrics": {"f1": 0.7}, "notes": "xgboost default"})
+    v = client.get(f"/project/{pid}/versions").json()[0]
+    assert v["metrics"] == {"val_auc": 0.81, "f1": 0.7} and v["notes"] == "xgboost default"
+
+    assert client.post(f"/project/{pid}/versions", json={"name": "baseline"}).status_code == 400
+    assert client.post(f"/project/{pid}/versions", json={"name": "main"}).status_code == 400
+    assert client.post(f"/project/{pid}/versions", json={"name": "bad name!"}).status_code == 400
+    assert client.patch(f"/project/{pid}/versions/baseline", json={"metrics": {"x": [1, 2]}}).status_code == 400
+    assert client.post(f"/project/{pid}/versions", json={"name": "raw", "node_id": root}).json()["node_id"] == root
+    assert client.delete(f"/project/{pid}/versions/raw").status_code == 200
+    assert "raw" not in projects[pid].versions
+
+
+def test_resolve_refs(pid_chain):
+    from backend.main import loom
+
+    pid, (root, f, strip, srt) = pid_chain
+    client.post(f"/project/{pid}/versions", json={"name": "v1", "node_id": f})
+    p = projects[pid]
+    assert loom.resolve(p, "v1") == f
+    assert loom.resolve(p, "main") == srt
+    assert loom.resolve(p, None) == srt
+    assert loom.resolve(p, strip[:8]) == strip
+    with pytest.raises(KeyError):
+        loom.resolve(p, "nope")

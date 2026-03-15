@@ -245,6 +245,21 @@ class MergeRequest(BaseModel):
     into: Optional[str] = None
 
 
+class VersionRequest(BaseModel):
+    name: str
+    node_id: Optional[str] = None
+    message: str = ""
+    notes: str = ""
+    metrics: dict[str, Any] = {}
+
+
+class VersionUpdateRequest(BaseModel):
+    message: Optional[str] = None
+    notes: Optional[str] = None
+    metrics: Optional[dict[str, Any]] = None
+    replace_metrics: bool = False
+
+
 # ------------------------------------------------------------------- general
 @app.get("/health")
 def health():
@@ -451,6 +466,30 @@ def cherry_pick(id: str, req: CherryPickRequest):
 @app.post("/project/{id}/merge")
 def merge(id: str, req: MergeRequest):
     return loom.merge(_get_project(id), req.source, req.into)
+
+
+# ------------------------------------------------------------------ versions
+@app.get("/project/{id}/versions")
+def list_versions(id: str):
+    project = _get_project(id)
+    return sorted(project.versions.values(), key=lambda v: v.created_at)
+
+
+@app.post("/project/{id}/versions")
+def create_version(id: str, req: VersionRequest):
+    """Name a step (default: the current one) so code and people can refer to it."""
+    return loom.create_version(_get_project(id), req.name, req.node_id, req.message, req.metrics, req.notes)
+
+
+@app.patch("/project/{id}/versions/{name}")
+def update_version(id: str, name: str, req: VersionUpdateRequest):
+    return loom.update_version(_get_project(id), name, req.message, req.notes, req.metrics, req.replace_metrics)
+
+
+@app.delete("/project/{id}/versions/{name}")
+def delete_version(id: str, name: str):
+    loom.delete_version(_get_project(id), name)
+    return {"status": "deleted"}
 
 
 @app.delete("/project/{id}/branch/{name:path}")
