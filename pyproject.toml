@@ -24,13 +24,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "httpx"]
+pandas = ["pandas>=2"]
+dev = ["pytest", "httpx", "pandas>=2"]
 
 [tool.setuptools.packages.find]
-include = ["backend*"]
+include = ["backend*", "loom*"]
 
 [project.scripts]
 loom = "backend.cli:cli"
 
 [tool.pytest.ini_options]
-testpaths = ["backend"]
+testpaths = ["backend", "tests"]

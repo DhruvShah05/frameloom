@@ -532,12 +532,20 @@ _SYM = {"eq": "=", "ne": "≠", "gt": ">", "lt": "<", "ge": "≥", "le": "≤", 
         "not_contains": "doesn't contain", "starts_with": "starts with", "ends_with": "ends with", "not_in": "not in"}
 
 
+def _fmt(v):
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    if isinstance(v, list):
+        return "[" + ", ".join(_fmt(x) for x in v) + "]"
+    return str(v)
+
+
 def _filter_describe(p):
     conds, combine = _conditions(p)
     parts = []
     for c in conds:
         op = c["operator"]
-        val = "" if op in _NO_VALUE_OPS else f" {c.get('value')}" + (f"–{c.get('value2')}" if op == "between" else "")
+        val = "" if op in _NO_VALUE_OPS else f" {_fmt(c.get('value'))}" + (f"–{_fmt(c.get('value2'))}" if op == "between" else "")
         parts.append(f"{c['column']} {_SYM.get(op, op)}{val}")
     return "Filter " + f" {combine.upper()} ".join(parts)
 

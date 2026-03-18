@@ -603,20 +603,6 @@ def delete_recipe(recipe_id: str):
     return {"status": "deleted"}
 
 
-def validate_recipe_input(recipe: Recipe, path: str, options: dict) -> list[str]:
-    actual_schema = {n: str(d) for n, d in engine.load_source(path, options).collect_schema().items()}
-    warnings = []
-    source_hash = file_digest(path, "md5") if not sources.is_remote(path) else "unknown"
-    if recipe.origin_hash != "unknown" and source_hash != recipe.origin_hash:
-        warnings.append("This file is different from the one the recipe was built on.")
-    for col, dtype in recipe.expected_schema.items():
-        if col not in actual_schema:
-            warnings.append(f"Missing column '{col}'.")
-        elif actual_schema[col] != dtype:
-            warnings.append(f"Column '{col}' expected {dtype} but found {actual_schema[col]} in the new file.")
-    return warnings
-
-
 @app.post("/recipe/apply")
 def apply_recipe(req: ApplyRecipeRequest):
     path = os.path.expanduser(req.new_source_path.strip())
@@ -625,29 +611,9 @@ def apply_recipe(req: ApplyRecipeRequest):
     recipe = store.recipes.get(req.recipe_id) or next((r for r in store.load_recipes() if r.id == req.recipe_id), None)
     if not recipe:
         raise HTTPException(status_code=404, detail="Recipe not found")
-
-    # Validate the new file before creating anything.
-    warnings = validate_recipe_input(recipe, path, req.options)
-    if warnings and not req.force:
+    project, warnings = loom.apply_recipe(recipe, path, req.options, force=req.force)
+    if project is None:
         return {"status": "warning", "warnings": warnings}
-
-    project = _create_project(path, req.options, save=False)
-    current_parent_id = _root_id(project)
-    lf = engine.build_plan(project, current_parent_id)
-    for i, op in enumerate(recipe.operations):
-        new_op = Operation(id=new_id(), type=op.type, params=op.params, label=op.label, engine_hint=op.engine_hint)
-        try:
-            lf = engine._apply_operation(lf, new_op)
-            schema_dict = {name: str(dtype) for name, dtype in lf.collect_schema().items()}
-            lf.head(10).collect()
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Step {i + 1} ('{op.label or op.type}') failed: {e}")
-        new_node = Node(id=new_id(), parent_id=current_parent_id, operation=new_op, schema_hash=schema_hash(schema_dict))
-        project.nodes[new_node.id] = new_node
-        current_parent_id = new_node.id
-
-    project.branches["main"].head_node_id = current_parent_id
-    _save_project(project)
     return {"status": "success", "project": project, "warnings": warnings}
 
 

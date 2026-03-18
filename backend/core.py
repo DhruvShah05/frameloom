@@ -519,3 +519,47 @@ class Loom:
             raise KeyError(f"Version '{name}' not found")
         del project.versions[name]
         self.store.save(project)
+
+    # ============================================================== recipes
+    def recipe_warnings(self, recipe, path: str, options: dict) -> list[str]:
+        actual = {n: str(d) for n, d in sources.load_source(path, options).collect_schema().items()}
+        warnings = []
+        source_hash = file_digest(path, "md5") if not sources.is_remote(path) else "unknown"
+        if recipe.origin_hash != "unknown" and source_hash != recipe.origin_hash:
+            warnings.append("This file is different from the one the recipe was built on.")
+        for col, dtype in recipe.expected_schema.items():
+            if col not in actual:
+                warnings.append(f"Missing column '{col}'.")
+            elif actual[col] != dtype:
+                warnings.append(f"Column '{col}' expected {dtype} but found {actual[col]} in the new file.")
+        return warnings
+
+    def apply_recipe(self, recipe, path: str, options: Optional[dict] = None, force: bool = False,
+                     save: bool = True, snapshot: Optional[bool] = None) -> tuple[Optional[Project], list[str]]:
+        """Replay a recipe on a new file. Returns (project, warnings); project is
+        None when there are warnings and force is False."""
+        options = options or {}
+        path = os.path.expanduser(path.strip())
+        if not sources.source_exists(path):
+            raise FileNotFoundError(f"File not found: {path}")
+        warnings = self.recipe_warnings(recipe, path, options)
+        if warnings and not force:
+            return None, warnings
+        project = self.create_project(path, options, snapshot=snapshot, save=False)
+        parent = self.root_id(project)
+        lf = self.engine.build_plan(project, parent)
+        for i, op in enumerate(recipe.operations):
+            new_op = Operation(id=new_id(), type=op.type, params=op.params, label=op.label, engine_hint=op.engine_hint)
+            try:
+                lf = self.engine._apply_operation(lf, new_op)
+                schema = {name: str(dtype) for name, dtype in lf.collect_schema().items()}
+                lf.head(10).collect()
+            except Exception as e:
+                raise HistoryError(f"Step {i + 1} ('{op.label or op.type}') failed: {e}") from e
+            node = Node(id=new_id(), parent_id=parent, operation=new_op, schema_hash=schema_hash(schema))
+            project.nodes[node.id] = node
+            parent = node.id
+        project.branches["main"].head_node_id = parent
+        if save:
+            self.store.save(project)
+        return project, warnings
