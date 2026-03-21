@@ -308,6 +308,9 @@ class OpSpec:
     code: Callable[[dict], list[str]]
     describe: Callable[[dict], str]
     normalize: Callable[[dict, dict | None], dict] = field(default=lambda p, s: p)
+    # Learns settings from the data when a step is added (categories, means,
+    # bounds) and stores them in params - like scikit-learn's fit().
+    fit: Callable[[pl.LazyFrame, dict, dict], dict] | None = None
     # Expensive steps (or steps that must collect) are cached after they run.
     expensive: bool = False
     imports: tuple[str, ...] = ()
@@ -975,8 +978,11 @@ def _fill_norm(p, s):
         raise ValueError("fill_missing needs columns")
     if strategy not in FILL_STRATEGIES:
         raise ValueError(f"fill_missing strategy must be one of: {', '.join(FILL_STRATEGIES)}")
-    _check_columns(s, cols, "fill_missing")
+    group = _as_list(p.get("group_by"))
+    _check_columns(s, cols + group, "fill_missing")
     out = {"columns": cols, "strategy": strategy}
+    if group and strategy not in ("value", "zero"):
+        out["group_by"] = group
     if strategy == "value":
         if p.get("value") is None:
             raise ValueError("fill_missing with strategy 'value' needs a value")
@@ -992,31 +998,40 @@ def _fill_norm(p, s):
 def _fill_apply(lf, p, s):
     cols = _as_list(p.get("columns") or p.get("column"))
     strategy = p.get("strategy", "value")
+    group = _as_list(p.get("group_by"))
     exprs = []
     for c in cols:
         e = pl.col(c)
         if strategy == "value":
             dtype = s.get(c)
             exprs.append(e.fill_null(_lit_expr(cast_value(_pick(p["value"], c), dtype), dtype)).alias(c))
-        elif strategy == "median":
-            exprs.append(e.fill_null(e.median()).alias(c))
-        else:
-            exprs.append(e.fill_null(strategy=strategy).alias(c))
+        elif strategy in ("forward", "backward"):
+            filled = e.fill_null(strategy=strategy)
+            exprs.append((filled.over(group) if group else filled).alias(c))
+        elif strategy == "zero":
+            exprs.append(e.fill_null(strategy="zero").alias(c))
+        else:  # mean / median / min / max, optionally per group
+            stat = getattr(e, strategy)()
+            exprs.append(e.fill_null(stat.over(group) if group else stat).alias(c))
     return lf.with_columns(exprs)
 
 
 def _fill_code(p):
     cols = _as_list(p.get("columns") or p.get("column"))
     strategy = p.get("strategy", "value")
+    group = _as_list(p.get("group_by"))
+    over = f".over({group!r})" if group else ""
     dtypes = p.get("dtypes") or {}
     exprs = []
     for c in cols:
         if strategy == "value":
             exprs.append(f"{_c(c)}.fill_null({_lit_code(_pick(p['value'], c), dtypes.get(c))}).alias({c!r})")
-        elif strategy == "median":
-            exprs.append(f"{_c(c)}.fill_null({_c(c)}.median()).alias({c!r})")
+        elif strategy in ("forward", "backward"):
+            exprs.append(f"{_c(c)}.fill_null(strategy={strategy!r}){over}.alias({c!r})")
+        elif strategy == "zero":
+            exprs.append(f"{_c(c)}.fill_null(strategy='zero').alias({c!r})")
         else:
-            exprs.append(f"{_c(c)}.fill_null(strategy={strategy!r}).alias({c!r})")
+            exprs.append(f"{_c(c)}.fill_null({_c(c)}.{strategy}(){over}).alias({c!r})")
     return [f"df = df.with_columns([{', '.join(exprs)}])"]
 
 
@@ -1024,7 +1039,8 @@ register(
     "fill_missing",
     apply=_fill_apply,
     code=_fill_code,
-    describe=lambda p: f"Fill empty {_names(_as_list(p.get('columns') or p.get('column')))} ({p.get('strategy', 'value')})",
+    describe=lambda p: f"Fill empty {_names(_as_list(p.get('columns') or p.get('column')))} ({p.get('strategy', 'value')}"
+    + (f" per {_names(_as_list(p.get('group_by')))})" if p.get("group_by") else ")"),
     normalize=_fill_norm,
 )
 
@@ -1479,3 +1495,7 @@ register(
 
 def catalogue() -> list[str]:
     return [k for k in OPS if k != "ingest"]
+
+
+# Machine-learning preparation steps register themselves into OPS.
+from . import ml_ops  # noqa: E402,F401

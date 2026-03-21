@@ -171,6 +171,8 @@ class ExecutionEngine:
         spec = ops.get_spec(op.type)
         schema = dict(lf.collect_schema())
         params = spec.normalize(dict(op.params), schema)
+        if spec.fit is not None:
+            params = spec.fit(lf, params, schema)
         label = op.label
         if not label or label == op.type:
             try:

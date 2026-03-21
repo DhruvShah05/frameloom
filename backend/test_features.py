@@ -201,6 +201,22 @@ OPERATION_CASES = [
     ("window", {"function": "pct_change", "column": "id"}),
     ("sql", {"query": "SELECT dept, COUNT(*) AS n FROM df GROUP BY dept ORDER BY dept"}),
     ("sql", {"query": "SELECT * FROM df WHERE age > 30 ORDER BY id", "dialect": "polars"}),
+    ("fill_missing", {"columns": ["age"], "strategy": "mean", "group_by": ["dept"]}),
+    ("fill_missing", {"columns": ["age"], "strategy": "forward", "group_by": ["dept"]}),
+    ("one_hot_encode", {"columns": ["dept"]}),
+    ("one_hot_encode", {"columns": ["dept", "name"], "max_categories": 2, "drop_original": False}),
+    ("label_encode", {"columns": ["dept"]}),
+    ("label_encode", {"columns": ["dept"], "order": "frequency", "suffix": ""}),
+    ("scale", {"columns": ["age", "id"], "method": "standard"}),
+    ("scale", {"columns": ["age"], "method": "minmax", "suffix": "_scaled"}),
+    ("scale", {"columns": ["age"], "method": "robust"}),
+    ("clip_outliers", {"columns": ["age"], "method": "iqr", "k": 0.5}),
+    ("clip_outliers", {"columns": ["age"], "method": "percentile", "lower_pct": 10, "upper_pct": 90}),
+    ("clip_outliers", {"columns": ["age", "id"], "method": "values", "lower": 2, "upper": 40}),
+    ("train_test_split", {"test_size": 0.33, "seed": 7}),
+    ("train_test_split", {"test_size": 0.2, "val_size": 0.2, "stratify": "dept"}),
+    ("train_test_split", {"test_size": 0.5, "group": "dept", "column": "fold"}),
+    ("date_parts", {"column": "joined", "parts": ["year", "quarter", "month", "week", "day", "day_of_year", "weekday", "is_weekend"]}),
 ]
 
 
@@ -583,3 +599,73 @@ def test_edit_of_a_row_that_is_not_there_is_rejected(people):
     filtered = _ok_op(pid, root, "filter_rows", column="id", operator="gt", value=1)
     r = _op(pid, filtered, "edit_cell", row=target, column="age", value=1)
     assert r.status_code == 400 and "isn't in the data" in r.json()["detail"]
+
+
+
+# --------------------------------------------------------------- ML prep
+
+def test_ml_steps_produce_the_right_values(people):
+    pid, root = _load(people)
+    oh = _engine_df(pid, _ok_op(pid, root, "one_hot_encode", columns=["dept"]))
+    assert {"dept_Eng", "dept_Mkt", "dept_Sales"} <= set(oh.columns) and "dept" not in oh.columns
+    assert oh["dept_Eng"].to_list() == [1, 0, 1, 0, 0, 1]
+
+    le = _engine_df(pid, _ok_op(pid, root, "label_encode", columns=["dept"]))
+    assert le["dept_code"].to_list() == [0, 2, 0, 1, 2, 0]
+
+    sc = _engine_df(pid, _ok_op(pid, root, "scale", columns=["age"], method="minmax"))
+    assert sc["age"].min() == 0.0 and sc["age"].max() == 1.0
+
+    cl = _engine_df(pid, _ok_op(pid, root, "clip_outliers", columns=["age"], method="values", lower=30, upper=40))
+    assert cl["age"].drop_nulls().to_list() == [30, 35, 40, 38, 30]
+
+    fm = _engine_df(pid, _ok_op(pid, root, "fill_missing", columns=["age"], strategy="mean", group_by=["dept"]))
+    assert fm["age"][2] == (30 + 29) / 2  # Charlie (Eng) gets the Eng mean
+
+
+def test_split_sizes_are_exact_and_repeatable(tmp_path):
+    p = tmp_path / "big.csv"
+    pl.DataFrame({"i": list(range(1000)), "g": [i % 10 for i in range(1000)], "label": [i % 2 for i in range(1000)]}).write_csv(p)
+    pid, root = _load(str(p))
+    a = _engine_df(pid, _ok_op(pid, root, "train_test_split", test_size=0.2, val_size=0.1, seed=1))
+    counts = dict(a.group_by("split").len().rows())
+    assert counts == {"train": 700, "val": 100, "test": 200}
+    b = _engine_df(pid, _ok_op(pid, root, "train_test_split", test_size=0.2, val_size=0.1, seed=1))
+    assert a["split"].to_list() == b["split"].to_list()
+    strat = _engine_df(pid, _ok_op(pid, root, "train_test_split", test_size=0.2, stratify="label"))
+    assert dict(strat.filter(pl.col("split") == "test").group_by("label").len().rows()) == {0: 100, 1: 100}
+    grp = _engine_df(pid, _ok_op(pid, root, "train_test_split", test_size=0.3, group="g"))
+    assert grp.group_by("g").agg(pl.col("split").n_unique())["split"].max() == 1  # a group never straddles splits
+
+
+def test_fit_on_training_rows_only(tmp_path):
+    p = tmp_path / "d.csv"
+    pl.DataFrame({"x": [0.0, 10.0, 1000.0], "split": ["train", "train", "test"]}).write_csv(p)
+    pid, root = _load(str(p))
+    node = _ok_op(pid, root, "scale", columns=["x"], method="minmax", fit_on={"column": "split", "value": "train"})
+    assert _engine_df(pid, node)["x"].to_list() == [0.0, 1.0, 100.0]  # the test row doesn't leak into min/max
+    assert "learned on split=train" in projects[pid].nodes[node].operation.label
+
+
+def test_recipes_reuse_learned_categories(people, tmp_path):
+    pid, root = _load(people)
+    node = _ok_op(pid, root, "one_hot_encode", columns=["dept"])
+    recipe = client.post(f"/project/{pid}/recipe/save", json={"name": "onehot", "node_id": node}).json()
+    other = tmp_path / "other.csv"
+    pl.read_csv(people).filter(pl.col("dept") == "Eng").write_csv(other)  # only one category present
+    r = client.post("/recipe/apply", json={"recipe_id": recipe["id"], "new_source_path": str(other), "force": True}).json()
+    head = r["project"]["branches"]["main"]["head_node_id"]
+    out = _engine_df(r["project"]["id"], head)
+    assert {"dept_Eng", "dept_Mkt", "dept_Sales"} <= set(out.columns)  # same columns as at training time
+    assert out["dept_Sales"].sum() == 0
+
+
+def test_editing_an_earlier_step_refits(people):
+    pid, root = _load(people)
+    f = _ok_op(pid, root, "filter_rows", column="dept", operator="ne", value="Mkt")
+    enc = _ok_op(pid, f, "one_hot_encode", columns=["dept"])
+    assert "dept_Mkt" not in _engine_df(pid, enc).columns
+    client.post(f"/project/{pid}/step/{f}/edit", json={"params": {"column": "dept", "operator": "ne", "value": "Sales"}})
+    head = projects[pid].branches["main"].head_node_id
+    cols = _engine_df(pid, head).columns
+    assert "dept_Mkt" in cols and "dept_Sales" not in cols
