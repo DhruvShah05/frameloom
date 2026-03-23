@@ -392,7 +392,8 @@ def get_chart(id: str, req: ChartRequest):
 def export_code(id: str, req: ExportRequest):
     project = _get_project(id)
     code = generate_script(_path_ops(project, req.node_id), req.target, project.source_path, project.source_options,
-                           snapshot=project.snapshot_path, sha256=project.source_sha256)
+                           snapshot=project.snapshot_path, sha256=project.source_sha256,
+                           root_schema=engine.get_schema(project, _root_id(project)))
     return {"code": code}
 
 

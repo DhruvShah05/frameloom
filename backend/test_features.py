@@ -669,3 +669,78 @@ def test_editing_an_earlier_step_refits(people):
     head = projects[pid].branches["main"].head_node_id
     cols = _engine_df(pid, head).columns
     assert "dept_Mkt" in cols and "dept_Sales" not in cols
+
+
+# ------------------------------------------------------- pandas code export
+
+def _comparable(df: pl.DataFrame) -> pl.DataFrame:
+    """Smooth over representation differences that aren't value differences:
+    pandas has no date-only type, stores ints with gaps as floats, etc."""
+    exprs = []
+    for name, dt in df.schema.items():
+        c = pl.col(name)
+        if dt == pl.Date or dt == pl.Datetime:
+            exprs.append(c.cast(pl.Datetime("us")).alias(name))
+        elif dt.is_numeric():
+            exprs.append(c.cast(pl.Float64).alias(name))
+        elif dt in (pl.Categorical,) or isinstance(dt, pl.Enum):
+            exprs.append(c.cast(pl.String).alias(name))
+        elif dt == pl.Boolean:
+            exprs.append(c.cast(pl.Float64).alias(name))
+    return df.with_columns(exprs) if exprs else df
+
+
+def _assert_pandas_parity(pid, node_id, any_order=False):
+    expected = _comparable(_engine_df(pid, node_id))
+    code = client.post(f"/project/{pid}/export/code", json={"node_id": node_id, "target": "pandas"}).json()["code"]
+    assert "import pandas as pd" in code
+    scope = {}
+    exec(compile(code, "<pandas export>", "exec"), scope)
+    actual = _comparable(pl.from_pandas(scope["df"]))
+    if any_order:
+        expected, actual = expected.sort(expected.columns, nulls_last=True), actual.sort(actual.columns, nulls_last=True)
+    try:
+        assert_frame_equal(actual, expected, check_dtypes=False, check_exact=False)
+    except AssertionError as e:
+        raise AssertionError(f"pandas export differs from app output\n\n{code}\n\n{e}\n\nexpected:\n{expected}\n\ngot:\n{actual}")
+    return code
+
+
+@pytest.mark.parametrize("op_type,params", OPERATION_CASES, ids=[f"{t}-{i}" for i, (t, _) in enumerate(OPERATION_CASES)])
+def test_pandas_export_matches_app(people, op_type, params):
+    pid, root = _load(people)
+    node = _ok_op(pid, root, op_type, **params)
+    _assert_pandas_parity(pid, node)
+
+
+def test_pandas_export_time_series_join_and_chains(sales, people, tmp_path):
+    pid, root = _load(sales)
+    for type_, params in [
+        ("resample", {"time_col": "date", "freq": "2d", "val_col": "units", "agg": "sum"}),
+        ("rolling", {"time_col": "date", "window": "3d", "val_col": "price", "agg": "mean"}),
+        ("fill_gaps", {"time_col": "date", "val_col": "units", "method": "forward"}),
+        ("filter_rows", {"column": "date", "operator": "ge", "value": "2023-01-05"}),
+        ("filter_rows", {"column": "date", "operator": "in", "value": "2023-01-01, 2023-01-03"}),
+        ("edit_cell", {"row": {"date": "2023-01-03", "store": "A", "units": None, "price": 1.5}, "column": "units", "value": 4}),
+        ("window", {"function": "cum_sum", "column": "units", "partition_by": ["store"], "order_by": "date"}),
+        ("date_parts", {"column": "date", "parts": ["year", "month", "weekday", "is_weekend"]}),
+    ]:
+        _assert_pandas_parity(pid, _ok_op(pid, root, type_, **params))
+
+    lookup = tmp_path / "depts.csv"
+    pl.DataFrame({"dept": ["Eng", "Sales"], "floor": [3, 1]}).write_csv(lookup)
+    pid, root = _load(people)
+    for how in ("left", "inner", "full", "semi", "anti"):
+        _assert_pandas_parity(pid, _ok_op(pid, root, "join", path=str(lookup), on="dept", how=how), any_order=True)
+    renamed = tmp_path / "renamed.csv"
+    pl.DataFrame({"department": ["Eng"], "floor": [3]}).write_csv(renamed)
+    _assert_pandas_parity(pid, _ok_op(pid, root, "join", path=str(renamed), left_on=["dept"], right_on=["department"], how="left"))
+
+    # A realistic chain mixing native pandas and bridged steps.
+    a = _ok_op(pid, root, "text_transform", columns=["name"], transform="strip")
+    b = _ok_op(pid, a, "cast_column", columns=["salary"], dtype="Float64", clean=True)
+    c = _ok_op(pid, b, "train_test_split", test_size=0.5, seed=3)
+    d = _ok_op(pid, c, "scale", columns=["salary"], fit_on={"column": "split", "value": "train"})
+    e = _ok_op(pid, d, "one_hot_encode", columns=["dept"])
+    code = _assert_pandas_parity(pid, e)
+    assert code.count("pl.from_pandas") == 1  # only the split needed Polars
