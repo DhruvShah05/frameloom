@@ -217,6 +217,12 @@ class AcceptSourceRequest(BaseModel):
     snapshot: bool = False
 
 
+class SampleRequest(BaseModel):
+    rows: Optional[int] = None  # None or 0 = work on all rows
+    method: Literal["head", "random"] = "head"
+    seed: int = 0
+
+
 class EditStepRequest(BaseModel):
     params: dict[str, Any]
     branch: Optional[str] = None
@@ -349,6 +355,21 @@ def accept_source(id: str, req: AcceptSourceRequest):
     return loom.accept_source(_get_project(id), snapshot=req.snapshot)
 
 
+@app.post("/project/{id}/sample")
+def set_sample(id: str, req: SampleRequest):
+    """Make the grid, profile, charts, compare and audit work on a sample.
+
+    Exports, loom.load(), recipes and code always use all rows, and steps
+    that learn settings (encoders, scalers) learn from all rows.
+    """
+    project = _get_project(id)
+    if req.rows is not None and req.rows < 0:
+        raise HTTPException(400, "Sample size must be positive")
+    project.sample = {"rows": req.rows, "method": req.method, "seed": req.seed} if req.rows else None
+    _save_project(project)
+    return {"sample": project.sample}
+
+
 @app.post("/project/{id}/op")
 def add_op(id: str, req: OpRequest):
     project = _get_project(id)
@@ -360,7 +381,7 @@ def add_op(id: str, req: OpRequest):
 def get_data(id: str, node_id: str, offset: int = 0, limit: int = 100):
     project = _get_project(id)
     _require_node(project, node_id)
-    view = engine.get_view(project, node_id, offset=max(offset, 0), limit=min(max(limit, 1), 10000))
+    view = engine.get_view(project, node_id, offset=max(offset, 0), limit=min(max(limit, 1), 10000), sampled=True)
     for row in view["data"]:
         row.pop("__row_nr", None)
     return view
@@ -371,21 +392,21 @@ def get_view(id: str, req: ViewRequest):
     project = _get_project(id)
     _require_node(project, req.node_id)
     return engine.get_view(project, req.node_id, offset=max(req.offset, 0), limit=min(max(req.limit, 1), 10000),
-                           sort=req.sort, filters=req.filters)
+                           sort=req.sort, filters=req.filters, sampled=True)
 
 
 @app.get("/project/{id}/profile")
 def get_profile(id: str, node_id: str, bins: int = 20):
     project = _get_project(id)
     _require_node(project, node_id)
-    return engine.profile(project, node_id, bins=min(max(bins, 2), 100))
+    return engine.profile(project, node_id, bins=min(max(bins, 2), 100), sampled=True)
 
 
 @app.post("/project/{id}/chart")
 def get_chart(id: str, req: ChartRequest):
     project = _get_project(id)
     _require_node(project, req.node_id)
-    return engine.chart(project, req.node_id, req.model_dump(exclude={"node_id"}))
+    return engine.chart(project, req.node_id, req.model_dump(exclude={"node_id"}), sampled=True)
 
 
 @app.post("/project/{id}/export/code")
@@ -624,7 +645,7 @@ def audit_compare_endpoint(id: str, req: AuditRequest):
     project = _get_project(id)
     _require_node(project, req.node_a)
     _require_node(project, req.node_b)
-    data = engine.audit_compare(project, req.node_a, req.node_b, req.key_column)
+    data = engine.audit_compare(project, req.node_a, req.node_b, req.key_column, sampled=True)
     schema_a = engine.get_schema(project, req.node_a)
     schema_b = engine.get_schema(project, req.node_b)
     schema = {req.key_column: schema_a.get(req.key_column, "String")}
@@ -644,7 +665,7 @@ def diff_nodes(id: str, node_a: str, node_b: str):
     project = _get_project(id)
     if node_a not in project.nodes or node_b not in project.nodes:
         raise HTTPException(400, "Node not found")
-    return engine.diff(project, node_a, node_b)
+    return engine.diff(project, node_a, node_b, sampled=True)
 
 
 frontend_dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")

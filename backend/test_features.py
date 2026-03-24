@@ -744,3 +744,36 @@ def test_pandas_export_time_series_join_and_chains(sales, people, tmp_path):
     e = _ok_op(pid, d, "one_hot_encode", columns=["dept"])
     code = _assert_pandas_parity(pid, e)
     assert code.count("pl.from_pandas") == 1  # only the split needed Polars
+
+
+# --------------------------------------------------------------- sample mode
+
+def test_sample_mode_affects_views_but_not_exports(tmp_path):
+    p = tmp_path / "n.csv"
+    pl.DataFrame({"i": list(range(100)), "g": [i % 3 for i in range(100)]}).write_csv(p)
+    pid, root = _load(str(p))
+    node = _ok_op(pid, root, "filter_rows", column="g", operator="eq", value=0)
+    assert client.get(f"/project/{pid}/data", params={"node_id": node, "limit": 1}).json()["total_rows"] == 34
+
+    assert client.post(f"/project/{pid}/sample", json={"rows": 10}).json()["sample"]["rows"] == 10
+    view = client.get(f"/project/{pid}/data", params={"node_id": node, "limit": 100}).json()
+    assert view["sampled"] and [r["i"] for r in view["data"]] == [0, 3, 6, 9]
+    assert client.get(f"/project/{pid}/profile", params={"node_id": root}).json()["row_count"] == 10
+    bar = client.post(f"/project/{pid}/chart", json={"node_id": root, "type": "bar", "x": "g"}).json()
+    assert sum(pt["y"] for pt in bar["points"]) == 10
+
+    # Exports, Python and steps that learn settings use all rows.
+    r = client.post(f"/project/{pid}/export/data", json={"node_id": node, "format": "csv"})
+    assert pl.read_csv(io.BytesIO(r.content)).height == 34
+    from backend.main import loom as core
+    assert core.dataframe(projects[pid], node).height == 34
+    sc = _ok_op(pid, root, "scale", columns=["i"], method="minmax")
+    assert projects[pid].nodes[sc].operation.params["stats"]["i"] == {"center": 0.0, "scale": 99.0}
+
+    client.post(f"/project/{pid}/sample", json={"rows": 10, "method": "random", "seed": 5})
+    a = [r["i"] for r in client.get(f"/project/{pid}/data", params={"node_id": root, "limit": 100}).json()["data"]]
+    b = [r["i"] for r in client.get(f"/project/{pid}/data", params={"node_id": root, "limit": 100}).json()["data"]]
+    assert a == b and len(a) == 10 and a != list(range(10)) and a == sorted(a)  # same rows, original order
+
+    client.post(f"/project/{pid}/sample", json={"rows": None})
+    assert client.get(f"/project/{pid}/data", params={"node_id": root, "limit": 1}).json()["total_rows"] == 100

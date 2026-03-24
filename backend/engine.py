@@ -120,31 +120,55 @@ class ExecutionEngine:
             raise ValueError(f"Node '{target_node_id}' not found")
         return path_nodes
 
-    def build_plan(self, project: Project, target_node_id: str) -> pl.LazyFrame:
-        """Walks from root to target_node_id, building the Polars lazy plan."""
+    @staticmethod
+    def sample_key(project: Project, sampled: bool) -> str:
+        """'' for full data, else a tag identifying the sample settings."""
+        if not sampled or not project.sample:
+            return ""
+        s = project.sample
+        return f"@sample:{int(s.get('rows', 0))}:{s.get('method', 'head')}:{int(s.get('seed', 0))}"
+
+    @staticmethod
+    def _sample_root(lf: pl.LazyFrame, sample: dict) -> pl.LazyFrame:
+        n = int(sample.get("rows") or 0)
+        if sample.get("method") == "random":
+            df = lf.collect()
+            return df.sample(n=min(n, df.height), seed=int(sample.get("seed", 0)), shuffle=False).lazy()
+        return lf.head(n)
+
+    def build_plan(self, project: Project, target_node_id: str, sampled: bool = False) -> pl.LazyFrame:
+        """Walks from root to target_node_id, building the Polars lazy plan.
+
+        With sampled=True and a project sample set, the plan starts from the
+        sample instead of the full data (cached separately).
+        """
         self._check_source(project)
         path_nodes = self._path_to(project, target_node_id)
+        tag = self.sample_key(project, sampled)
+        key = (lambda nid: nid + tag) if tag else (lambda nid: nid)
 
         # Start from the nearest cached ancestor, scanning back from the target.
         cache_hit_index = -1
         for i in range(len(path_nodes) - 1, -1, -1):
-            if path_nodes[i].id in self.cache:
+            if key(path_nodes[i].id) in self.cache:
                 cache_hit_index = i
                 break
 
         if cache_hit_index != -1:
-            lf = self._cache_get(path_nodes[cache_hit_index].id).lazy()
+            lf = self._cache_get(key(path_nodes[cache_hit_index].id)).lazy()
             remaining_nodes = path_nodes[cache_hit_index + 1:]
         else:
             lf = self.load_source(project.read_path, project.read_options)
             remaining_nodes = path_nodes
             fmt = sources.infer_format(project.read_path, project.read_options)
-            if fmt in sources.EAGER_FORMATS and remaining_nodes:
-                # Re-reading Excel/JSON/databases is slow: keep the root in memory.
+            if (tag or fmt in sources.EAGER_FORMATS) and remaining_nodes:
+                # Keep slow-to-read roots (Excel/JSON/databases) and samples in memory.
                 root = remaining_nodes[0]
+                if tag:
+                    lf = self._sample_root(lf, project.sample)
                 lf = self._apply_operation(lf, root.operation)
                 df = lf.collect()
-                self._cache_put(project, root.id, df)
+                self._cache_put(project, key(root.id), df)
                 lf = df.lazy()
                 remaining_nodes = remaining_nodes[1:]
 
@@ -155,7 +179,7 @@ class ExecutionEngine:
             spec = ops.OPS.get(node.operation.type)
             if (spec is not None and spec.expensive) or nodes_since_cache >= CACHE_EVERY:
                 df = lf.collect()
-                self._cache_put(project, node.id, df)
+                self._cache_put(project, key(node.id), df)
                 lf = df.lazy()
                 nodes_since_cache = 0
 
@@ -191,14 +215,15 @@ class ExecutionEngine:
         return json_safe_rows(lf.slice(offset, limit).collect())
 
     def get_schema(self, project: Project, node_id: str) -> dict[str, str]:
-        lf = self.build_plan(project, node_id)
+        lf = self.build_plan(project, node_id)  # schema doesn't depend on sampling
         return {name: str(dtype) for name, dtype in lf.collect_schema().items()}
 
-    def row_count(self, project: Project, node_id: str) -> int:
-        key = (project.id, node_id, None)
-        if key in self._count_cache and node_id in self.cache:
+    def row_count(self, project: Project, node_id: str, sampled: bool = False) -> int:
+        tag = self.sample_key(project, sampled)
+        key = (project.id, node_id + tag, None)
+        if key in self._count_cache and node_id + tag in self.cache:
             return self._count_cache[key]
-        n = self.build_plan(project, node_id).select(pl.len()).collect().item()
+        n = self.build_plan(project, node_id, sampled).select(pl.len()).collect().item()
         self._remember_count(key, n)
         return n
 
@@ -210,13 +235,14 @@ class ExecutionEngine:
 
     def get_view(self, project: Project, node_id: str, offset: int = 0, limit: int = 100,
                  sort: Optional[list[dict]] = None, filters: Optional[list[dict]] = None,
-                 columns: Optional[list[str]] = None) -> dict:
+                 columns: Optional[list[str]] = None, sampled: bool = False) -> dict:
         """A page of rows with optional view-only sort and filters.
 
         Each row carries ``__row_nr``: its position in the step's real output,
         so edits made in a sorted/filtered view land on the right row.
         """
-        lf = self.build_plan(project, node_id)
+        lf = self.build_plan(project, node_id, sampled)
+        tag = self.sample_key(project, sampled)
         schema = dict(lf.collect_schema())
         view = lf.with_row_index(ROW_INDEX_COL)
         if filters:
@@ -232,28 +258,29 @@ class ExecutionEngine:
             keep = [c for c in columns if c in schema]
             view = view.select([ROW_INDEX_COL, *keep])
 
-        count_key = (project.id, node_id, repr((filters or [], sort or [])))
+        count_key = (project.id, node_id + tag, repr((filters or [], sort or [])))
         if count_key in self._count_cache:
             total = self._count_cache[count_key]
         else:
-            total = view.select(pl.len()).collect().item() if filters else self.row_count(project, node_id)
+            total = view.select(pl.len()).collect().item() if filters else self.row_count(project, node_id, sampled)
             self._remember_count(count_key, total)
         rows = json_safe_rows(view.slice(offset, limit).collect())
         return {"data": rows, "schema": {k: str(v) for k, v in schema.items()}, "total_rows": total,
-                "offset": offset}
+                "offset": offset, "sampled": bool(tag), "sample": project.sample if tag else None}
 
     def cache_node(self, project: Project, node_id: str):
         lf = self.build_plan(project, node_id)
         self._cache_put(project, node_id, lf.collect())
 
     # ------------------------------------------------------------ profile
-    def profile(self, project: Project, node_id: str, bins: int = 20) -> dict:
-        df = self.build_plan(project, node_id).collect()
+    def profile(self, project: Project, node_id: str, bins: int = 20, sampled: bool = False) -> dict:
+        df = self.build_plan(project, node_id, sampled).collect()
         height = df.height
         columns = []
         for name, dtype in df.schema.items():
             columns.append(self._profile_column(df.get_column(name), dtype, height, bins))
-        return {"row_count": height, "column_count": df.width, "columns": columns}
+        return {"row_count": height, "column_count": df.width, "columns": columns,
+                "sampled": bool(self.sample_key(project, sampled))}
 
     def _profile_column(self, s: pl.Series, dtype, height: int, bins: int) -> dict:
         nulls = s.null_count()
@@ -364,8 +391,8 @@ class ExecutionEngine:
         return [{"x0": lo + i * width, "x1": lo + (i + 1) * width, "count": int(counts.get(i, 0))} for i in range(bins)]
 
     # ------------------------------------------------------------ charts
-    def chart(self, project: Project, node_id: str, spec: dict) -> dict:
-        lf = self.build_plan(project, node_id)
+    def chart(self, project: Project, node_id: str, spec: dict, sampled: bool = False) -> dict:
+        lf = self.build_plan(project, node_id, sampled)
         schema = dict(lf.collect_schema())
         ctype = spec.get("type")
         x, y = spec.get("x"), spec.get("y")
@@ -428,11 +455,11 @@ class ExecutionEngine:
                 "points": [{"x": r[x], "y": r[y]} for r in rows], "sampled": n > max_points, "total_points": n}
 
     # ------------------------------------------------------------ compare
-    def diff(self, project: Project, node_a: str, node_b: str) -> dict:
+    def diff(self, project: Project, node_a: str, node_b: str, sampled: bool = False) -> dict:
         schema_a = self.get_schema(project, node_a)
         schema_b = self.get_schema(project, node_b)
-        row_count_a = self.row_count(project, node_a)
-        row_count_b = self.row_count(project, node_b)
+        row_count_a = self.row_count(project, node_a, sampled)
+        row_count_b = self.row_count(project, node_b, sampled)
         return {
             "columns_added": [c for c in schema_b if c not in schema_a],
             "columns_removed": [c for c in schema_a if c not in schema_b],
@@ -443,9 +470,9 @@ class ExecutionEngine:
             "row_count_delta": row_count_b - row_count_a,
         }
 
-    def audit_compare(self, project: Project, node_a: str, node_b: str, key_column: str) -> list[dict]:
-        df_a = self.build_plan(project, node_a).collect()
-        df_b = self.build_plan(project, node_b).collect()
+    def audit_compare(self, project: Project, node_a: str, node_b: str, key_column: str, sampled: bool = False) -> list[dict]:
+        df_a = self.build_plan(project, node_a, sampled).collect()
+        df_b = self.build_plan(project, node_b, sampled).collect()
 
         if key_column not in df_a.schema or key_column not in df_b.schema:
             raise ValueError(f"Key column '{key_column}' must be present in both branches.")
