@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { OP_GROUPS, OPS_BY_TYPE, FILTER_OPERATORS, NO_VALUE_OPERATORS, AGG_OPTIONS, buildParams } from '../opsConfig';
+import React, { useEffect, useMemo, useState } from 'react';
+import { OP_GROUPS, OPS_BY_TYPE, FILTER_OPERATORS, NO_VALUE_OPERATORS, AGG_OPTIONS, buildParams, paramsToForm } from '../opsConfig';
 import { isNumericType, isTextType, isDateType } from '../api';
 
 const selectClass = "w-full bg-white border border-grid-border rounded-DEFAULT px-2 h-row-height font-grid-data text-grid-data focus:border-primary-container focus:ring-1 focus:ring-bright-accent outline-none";
@@ -141,9 +141,53 @@ function SortEditor({ value = [], onChange, columns }) {
   );
 }
 
-export default function OperationMenu({ onApplyOp, schema, busy }) {
+function FitOnEditor({ value, onChange, columns }) {
+  const v = value || {};
+  return (
+    <div className="flex gap-1 items-center">
+      <select className={`${selectClass} max-w-[130px]`} value={v.column || ''} onChange={e => onChange(e.target.value ? { ...v, column: e.target.value } : undefined)}>
+        <option value="">All rows</option>
+        {columns.map(c => <option key={c} value={c}>{c}</option>)}
+      </select>
+      {v.column && (
+        <>
+          <span className="text-[11px] text-on-surface-variant">=</span>
+          <input className={inputClass} value={v.value ?? ''} placeholder="train" onChange={e => onChange({ ...v, value: e.target.value })} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function MultiOptionSelect({ value = [], onChange, options }) {
+  const toggle = k => onChange(value.includes(k) ? value.filter(v => v !== k) : [...value, k]);
+  return (
+    <div className="grid grid-cols-2 gap-x-2 gap-y-[2px] border border-grid-border rounded-DEFAULT bg-white p-2">
+      {options.map(([k, label]) => (
+        <label key={k} className="flex items-center gap-1 text-[12px] cursor-pointer">
+          <input type="checkbox" checked={value.includes(k)} onChange={() => toggle(k)} className="accent-[#c98f00]" /> {label}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * editing: { nodeId, type, params, label } to change an existing step.
+ * viewingEarlier: the selected step isn't the branch head, so a new step can
+ * either be inserted there (later steps replay) or start a new branch.
+ */
+export default function OperationMenu({ onApplyOp, onSaveEdit, onCancelEdit, editing, viewingEarlier, schema, busy }) {
   const [opType, setOpType] = useState('filter_rows');
   const [params, setParams] = useState(() => structuredClone(OPS_BY_TYPE.filter_rows.defaults || {}));
+  const [insert, setInsert] = useState(true);
+
+  useEffect(() => {
+    if (editing && OPS_BY_TYPE[editing.type]) {
+      setOpType(editing.type);
+      setParams(paramsToForm(OPS_BY_TYPE[editing.type], editing.params));
+    }
+  }, [editing]);
 
   const hasTime = useMemo(() => columnsOfType(schema, 'date').length > 0, [schema]);
   const def = OPS_BY_TYPE[opType];
@@ -155,7 +199,11 @@ export default function OperationMenu({ onApplyOp, schema, busy }) {
   };
 
   const apply = async () => {
-    const ok = await onApplyOp(opType, buildParams(def, params));
+    if (editing) {
+      await onSaveEdit(buildParams(def, params));
+      return;
+    }
+    const ok = await onApplyOp(opType, buildParams(def, params), { insert: viewingEarlier && insert });
     if (ok && opType === 'filter_rows') {
       setParams(structuredClone(def.defaults));
     }
@@ -204,6 +252,12 @@ export default function OperationMenu({ onApplyOp, schema, busy }) {
       case 'sortby':
         control = <SortEditor value={params[f.key]} onChange={v => set(f.key, v)} columns={Object.keys(schema || {})} />;
         break;
+      case 'fit_on':
+        control = <FitOnEditor value={params[f.key]} onChange={v => set(f.key, v)} columns={Object.keys(schema || {})} />;
+        break;
+      case 'multiselect':
+        control = <MultiOptionSelect value={params[f.key] || []} onChange={v => set(f.key, v)} options={f.options} />;
+        break;
       case 'path':
         control = <input className={`${inputClass} font-mono text-[12px]`} type="text" placeholder="/path/to/other.csv" value={params[f.key] ?? ''} onChange={e => set(f.key, e.target.value)} />;
         break;
@@ -219,11 +273,15 @@ export default function OperationMenu({ onApplyOp, schema, busy }) {
   };
 
   return (
-    <div className="p-4 border-b border-grid-border flex flex-col gap-3">
-      <h3 className="font-panel-title text-panel-title text-on-surface m-0">Transform</h3>
+    <div className={`p-4 border-b border-grid-border flex flex-col gap-3 ${editing ? 'bg-highlight-bg' : ''}`}>
+      <div className="flex items-center gap-2">
+        <h3 className="font-panel-title text-panel-title text-on-surface m-0">{editing ? 'Edit step' : 'Transform'}</h3>
+        {editing && <button type="button" className={`${smallBtn} ml-auto`} onClick={onCancelEdit}>Cancel</button>}
+      </div>
+      {editing && <p className="m-0 text-[11px] text-on-surface-variant">Changing “{editing.label}”. Later steps on this branch will replay on top; undo restores the old history.</p>}
       <div className="flex flex-col gap-1">
         <label className={labelClass}>Operation</label>
-        <select className={selectClass} value={opType} onChange={e => chooseOp(e.target.value)}>
+        <select className={selectClass} value={opType} disabled={!!editing} onChange={e => chooseOp(e.target.value)}>
           {OP_GROUPS.filter(g => !g.timeOnly || hasTime).map(g => (
             <optgroup key={g.name} label={g.name}>
               {g.ops.map(o => <option key={o.type} value={o.type}>{o.label}</option>)}
@@ -235,8 +293,16 @@ export default function OperationMenu({ onApplyOp, schema, busy }) {
       {def.fields.map(renderField)}
       {def.hint && <p className="m-0 text-[11px] text-on-surface-variant">{def.hint}</p>}
 
+      {viewingEarlier && !editing && (
+        <div className="flex flex-col gap-1 text-[12px] rounded-DEFAULT border border-bright-accent bg-highlight-bg p-2">
+          <span className="text-on-surface-variant">You're viewing an earlier step.</span>
+          <label className="flex items-center gap-2 cursor-pointer"><input type="radio" checked={insert} onChange={() => setInsert(true)} className="accent-[#c98f00]" /> Insert here (later steps replay on top)</label>
+          <label className="flex items-center gap-2 cursor-pointer"><input type="radio" checked={!insert} onChange={() => setInsert(false)} className="accent-[#c98f00]" /> Start a new branch from here</label>
+        </div>
+      )}
+
       <button disabled={busy} className="mt-1 w-full bg-primary-container text-white font-ui-label text-ui-label h-row-height rounded-DEFAULT hover:bg-primary transition-colors flex items-center justify-center gap-1 disabled:opacity-60 disabled:cursor-wait" onClick={apply}>
-        {busy ? 'Applying…' : 'Apply'}
+        {busy ? 'Working…' : editing ? 'Save changes' : viewingEarlier && insert ? 'Insert step' : 'Apply'}
       </button>
     </div>
   );

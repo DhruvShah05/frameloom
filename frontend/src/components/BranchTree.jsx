@@ -53,6 +53,9 @@ export default function BranchTree({ project, activeNode, onNodeClick, onNewBran
       headToBranches[b.head_node_id].push(b.name);
     });
 
+    const versionsAt = {};
+    Object.values(project.versions || {}).forEach(v => { (versionsAt[v.node_id] ||= []).push(v.name); });
+
     const rfNodes = Object.values(project.nodes).map(n => {
       const isHead = n.id === activeNode;
       const branches = headToBranches[n.id] || [];
@@ -63,7 +66,9 @@ export default function BranchTree({ project, activeNode, onNodeClick, onNewBran
         data: { 
           label: n.operation.label,
           isHead,
-          branches
+          branches,
+          versions: versionsAt[n.id] || [],
+          note: n.note,
         },
       };
     });

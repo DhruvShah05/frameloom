@@ -16,6 +16,7 @@ export default function StartScreen({ recipes, onLoad, onOpenProject, onError, b
   const [recipeId, setRecipeId] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [recent, setRecent] = useState([]);
+  const [pin, setPin] = useState(null); // null = server default (copy files up to 2 GB)
 
   const refreshRecent = () => api('/projects').then(setRecent).catch(() => {});
   useEffect(() => { refreshRecent(); }, []);
@@ -44,7 +45,7 @@ export default function StartScreen({ recipes, onLoad, onOpenProject, onError, b
       onError('Pick a table (or write a query) for this database.');
       return;
     }
-    onLoad(path.trim(), options, recipeId || null);
+    onLoad(path.trim(), options, recipeId || null, pin);
   };
 
   const removeProject = async p => {
@@ -153,6 +154,18 @@ export default function StartScreen({ recipes, onLoad, onOpenProject, onError, b
             </div>
           )}
 
+          {fmt && (
+            <label className="flex items-start gap-2 text-[12px] cursor-pointer">
+              <input type="checkbox" className="accent-[#c98f00] mt-[2px]" checked={pin ?? info.snapshot_by_default}
+                onChange={e => setPin(e.target.checked)} />
+              <span>
+                Keep a frozen copy so versions never change, even if the file does
+                {info.size_bytes != null && <span className="text-on-surface-variant"> ({(info.size_bytes / 1048576).toFixed(info.size_bytes > 1048576 ? 0 : 1)} MB)</span>}
+                {!info.snapshot_by_default && <span className="block text-on-surface-variant">Off by default for files over 2 GB.</span>}
+              </span>
+            </label>
+          )}
+
           {recipes.length > 0 && (
             <div className="flex flex-col gap-1">
               <label className={labelClass}>Apply a recipe (optional)</label>
@@ -178,7 +191,7 @@ export default function StartScreen({ recipes, onLoad, onOpenProject, onError, b
                   <div className="font-ui-label text-ui-label text-on-surface truncate">{p.name}</div>
                   <div className="text-[11px] text-on-surface-variant truncate font-mono" title={p.source_path}>{p.source_path}</div>
                   <div className="text-[11px] text-on-surface-variant">
-                    {p.steps} step{p.steps === 1 ? '' : 's'} · {p.branches} branch{p.branches === 1 ? '' : 'es'} · {new Date(p.created_at).toLocaleString()}
+                    {p.steps} step{p.steps === 1 ? '' : 's'} · {p.branches} branch{p.branches === 1 ? '' : 'es'}{p.versions ? ` · ${p.versions} version${p.versions === 1 ? '' : 's'}` : ''}{p.pinned ? ' · pinned' : ''} · {new Date(p.created_at).toLocaleString()}
                     {!p.source_exists && <span className="text-error"> · file missing</span>}
                   </div>
                 </button>

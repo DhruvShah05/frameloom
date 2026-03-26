@@ -247,10 +247,12 @@ const DataGrid = forwardRef(function DataGrid(
   }, [onViewChange]);
 
   const onCellValueChanged = useCallback(p => {
-    if (p.oldValue === p.newValue) return;
-    const rowNr = p.data?.__row_nr;
-    if (rowNr === undefined) return;
-    onEditCell?.(rowNr, p.colDef.field, p.newValue === undefined ? null : p.newValue);
+    if (p.oldValue === p.newValue || !p.data) return;
+    // Send the row as it was before the edit: the step finds it by its values,
+    // so the edit follows the row even if earlier steps change later.
+    const { __row_nr, ...row } = p.data; // eslint-disable-line no-unused-vars
+    row[p.colDef.field] = p.oldValue === undefined ? null : p.oldValue;
+    onEditCell?.(row, p.colDef.field, p.newValue === undefined ? null : p.newValue);
   }, [onEditCell]);
 
   const toggle = setter => c => setter(list => (list.includes(c) ? list.filter(x => x !== c) : [...list, c]));

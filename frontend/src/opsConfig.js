@@ -27,6 +27,7 @@ export const OP_GROUPS = [
         type: 'rename_column', label: 'Rename column',
         fields: [{ key: 'oldCol', label: 'Column', kind: 'column' }, { key: 'newName', label: 'New name', kind: 'text' }],
         toParams: p => ({ mapping: { [p.oldCol]: p.newName } }),
+        fromParams: p => { const [oldCol, newName] = Object.entries(p.mapping || {})[0] || []; return { oldCol, newName }; },
       },
       {
         type: 'cast_column', label: 'Change type',
@@ -81,6 +82,7 @@ export const OP_GROUPS = [
           { key: 'seed', label: 'Seed (same seed = same sample)', kind: 'number' },
         ],
         toParams: p => (p.mode === 'fraction' ? { fraction: Number(p.percent) / 100, seed: p.seed } : { n: p.n, seed: p.seed }),
+        fromParams: p => (p.fraction ? { mode: 'fraction', percent: p.fraction * 100, seed: p.seed } : { mode: 'n', n: p.n, seed: p.seed }),
       },
       {
         type: 'drop_duplicates', label: 'Remove duplicates',
@@ -157,6 +159,7 @@ export const OP_GROUPS = [
           { key: 'columns', label: 'Columns', kind: 'columns' },
           { key: 'strategy', label: 'Fill with', kind: 'select', options: [['value', 'A fixed value'], ['forward', 'Previous value'], ['backward', 'Next value'], ['mean', 'Column mean'], ['median', 'Column median'], ['min', 'Column min'], ['max', 'Column max'], ['zero', 'Zero']] },
           { key: 'value', label: 'Value', kind: 'text', show: p => p.strategy === 'value' },
+          { key: 'group_by', label: 'Separately for each (optional)', kind: 'columns', optional: true, show: p => !['value', 'zero'].includes(p.strategy) },
         ],
       },
       {
@@ -195,6 +198,81 @@ export const OP_GROUPS = [
           { key: 'descending', label: 'Descending', kind: 'checkbox' },
           { key: 'offset', label: 'Rows back/ahead', kind: 'number', show: p => ['lag', 'lead', 'diff', 'pct_change'].includes(p.function) },
           { key: 'new_column', label: 'New column name (optional)', kind: 'text' },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'Machine learning prep',
+    ops: [
+      {
+        type: 'train_test_split', label: 'Train / validation / test split',
+        defaults: { test_size: 20, val_size: 0, seed: 42, column: 'split' },
+        fields: [
+          { key: 'test_size', label: 'Test %', kind: 'number' },
+          { key: 'val_size', label: 'Validation % (optional)', kind: 'number' },
+          { key: 'stratify', label: 'Keep class balance of (optional)', kind: 'column', optional: true },
+          { key: 'group', label: 'Keep groups together, e.g. a customer id (optional)', kind: 'column', optional: true, show: p => !p.stratify },
+          { key: 'seed', label: 'Seed (same seed = same split)', kind: 'number' },
+          { key: 'column', label: 'Name of the new split column', kind: 'text' },
+        ],
+        hint: 'Adds a column with train / val / test. Sizes are exact.',
+        toParams: p => ({ ...p, test_size: Number(p.test_size) / 100, val_size: Number(p.val_size || 0) / 100 }),
+        fromParams: p => ({ ...p, test_size: Math.round(p.test_size * 1000) / 10, val_size: Math.round((p.val_size || 0) * 1000) / 10 }),
+      },
+      {
+        type: 'one_hot_encode', label: 'One-hot encode',
+        defaults: { max_categories: 20, drop_original: true },
+        fields: [
+          { key: 'columns', label: 'Category columns', kind: 'columns' },
+          { key: 'max_categories', label: 'Most frequent categories to keep (rest → _other)', kind: 'number' },
+          { key: 'drop_original', label: 'Remove the original columns', kind: 'checkbox' },
+          { key: 'fit_on', label: 'Learn categories only from rows where (optional)', kind: 'fit_on' },
+        ],
+        hint: 'Categories are learned now and reused when this step replays or runs as a recipe.',
+      },
+      {
+        type: 'label_encode', label: 'Label encode (category → number)',
+        defaults: { order: 'alphabetical', suffix: '_code' },
+        fields: [
+          { key: 'columns', label: 'Category columns', kind: 'columns' },
+          { key: 'order', label: 'Number them', kind: 'select', options: [['alphabetical', 'Alphabetically'], ['frequency', 'Most common first']] },
+          { key: 'suffix', label: 'New column suffix (empty = replace)', kind: 'text' },
+          { key: 'fit_on', label: 'Learn categories only from rows where (optional)', kind: 'fit_on' },
+        ],
+        hint: 'Unseen values become -1.',
+      },
+      {
+        type: 'scale', label: 'Scale numbers',
+        defaults: { method: 'standard' },
+        fields: [
+          { key: 'columns', label: 'Numeric columns', kind: 'columns', types: 'numeric' },
+          { key: 'method', label: 'Method', kind: 'select', options: [['standard', 'Standardize (mean 0, std 1)'], ['minmax', 'Min-max (0 to 1)'], ['robust', 'Robust (median & IQR)']] },
+          { key: 'suffix', label: 'New column suffix (empty = replace)', kind: 'text' },
+          { key: 'fit_on', label: 'Learn statistics only from rows where (optional)', kind: 'fit_on' },
+        ],
+      },
+      {
+        type: 'clip_outliers', label: 'Clip outliers',
+        defaults: { method: 'iqr', k: 1.5, lower_pct: 1, upper_pct: 99 },
+        fields: [
+          { key: 'columns', label: 'Numeric columns', kind: 'columns', types: 'numeric' },
+          { key: 'method', label: 'Limits from', kind: 'select', options: [['iqr', 'IQR rule (Q1 − k·IQR, Q3 + k·IQR)'], ['percentile', 'Percentiles'], ['values', 'Fixed values']] },
+          { key: 'k', label: 'k', kind: 'number', show: p => p.method === 'iqr' },
+          { key: 'lower_pct', label: 'Lower percentile', kind: 'number', show: p => p.method === 'percentile' },
+          { key: 'upper_pct', label: 'Upper percentile', kind: 'number', show: p => p.method === 'percentile' },
+          { key: 'lower', label: 'Lower limit', kind: 'number', show: p => p.method === 'values' },
+          { key: 'upper', label: 'Upper limit', kind: 'number', show: p => p.method === 'values' },
+          { key: 'fit_on', label: 'Learn limits only from rows where (optional)', kind: 'fit_on', show: p => p.method !== 'values' },
+        ],
+      },
+      {
+        type: 'date_parts', label: 'Date features',
+        defaults: { parts: ['year', 'month', 'day', 'weekday'] },
+        fields: [
+          { key: 'column', label: 'Date column', kind: 'column', types: 'date' },
+          { key: 'parts', label: 'Features', kind: 'multiselect', options: [['year', 'Year'], ['quarter', 'Quarter'], ['month', 'Month'], ['week', 'Week of year'], ['day', 'Day of month'], ['day_of_year', 'Day of year'], ['weekday', 'Weekday (1 = Mon)'], ['is_weekend', 'Is weekend'], ['hour', 'Hour'], ['minute', 'Minute']] },
+          { key: 'prefix', label: 'Prefix for new columns (default: column name + _)', kind: 'text' },
         ],
       },
     ],
@@ -245,6 +323,7 @@ export const OP_GROUPS = [
           { key: 'suffix', label: 'Suffix for clashing names', kind: 'text', placeholder: '_right' },
         ],
         toParams: p => ({ ...p, right_on: p.right_on ? commaList(p.right_on) : undefined }),
+        fromParams: p => ({ ...p, right_on: (p.right_on || []).join(', ') === (p.left_on || []).join(', ') ? '' : (p.right_on || []).join(', ') }),
       },
       {
         type: 'append_rows', label: 'Append rows from file',
@@ -311,6 +390,38 @@ export const AGG_OPTIONS = AGGS;
 
 export const OPS_BY_TYPE = Object.fromEntries(OP_GROUPS.flatMap(g => g.ops.map(o => [o.type, o])));
 
+// Settings a step learned from the data, or stored for exact replay. They are
+// re-learned when an edited step is saved, so the form never sends them back.
+const LEARNED = ['categories', 'mapping', 'stats', 'bounds', 'source_dtypes', 'dtypes', 'dtype', 'match', 'match_dtypes'];
+const firstValue = v => (v && typeof v === 'object' && !Array.isArray(v) ? Object.values(v)[0] : v);
+const joinList = v => (Array.isArray(v) ? v.join(', ') : v);
+
+/** Turn a saved step's params back into form state, for editing. */
+export function paramsToForm(def, params) {
+  let p = { ...params };
+  LEARNED.forEach(k => delete p[k]);
+  if (def.type === 'filter_rows' && !p.conditions) {
+    p = { conditions: [{ column: p.column, operator: p.operator, value: p.value ?? '', value2: p.value2, ignore_case: p.ignore_case }], combine: 'and' };
+  }
+  if (def.type === 'filter_rows') {
+    p.conditions = p.conditions.map(c => {
+      const { dtype, ...rest } = c; // eslint-disable-line no-unused-vars
+      return { ...rest, value: Array.isArray(rest.value) ? rest.value.join(', ') : rest.value ?? '' };
+    });
+  }
+  if ('find' in p) p.find = firstValue(p.find);
+  if ('replace' in p) p.replace = firstValue(p.replace);
+  if ('value' in p && def.type === 'fill_missing') p.value = firstValue(p.value);
+  ['breaks', 'labels', 'names'].forEach(k => { if (k in p) p[k] = joinList(p[k]); });
+  if (def.type === 'clip_outliers' && params.method === 'values' && params.bounds) {
+    const b = Object.values(params.bounds)[0] || {};
+    p.lower = b.lower ?? undefined;
+    p.upper = b.upper ?? undefined;
+  }
+  if (p.fit_on === null) delete p.fit_on;
+  return def.fromParams ? def.fromParams(p) : p;
+}
+
 /** Drop hidden and empty fields, then apply the op's own reshaping. */
 export function buildParams(def, params) {
   const out = {};
@@ -323,6 +434,7 @@ export function buildParams(def, params) {
   for (const k of Object.keys(params)) {
     if (!(k in out) && !def.fields.some(f => f.key === k)) out[k] = params[k];
   }
+  if (out.fit_on && !out.fit_on.column) delete out.fit_on;
   const shaped = def.toParams ? def.toParams({ ...params, ...out }) : out;
   if (def.type === 'filter_rows') {
     return {

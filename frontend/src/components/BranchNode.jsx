@@ -40,9 +40,16 @@ export default function BranchNode({ data, selected }) {
             </div>
           )}
         </div>
-        <p className={`font-grid-data text-grid-data text-on-surface truncate ${isActive ? 'font-medium' : ''}`}>
+        <p className={`font-grid-data text-grid-data text-on-surface truncate ${isActive ? 'font-medium' : ''}`} title={data.note || data.label}>
           {data.label}
         </p>
+        {data.versions?.length > 0 && (
+          <div className="flex gap-1 flex-wrap mt-1">
+            {data.versions.map(v => (
+              <span key={v} className="px-1.5 py-0.5 rounded-full text-[9px] font-semibold bg-secondary-container text-on-secondary-container">🏷 {v}</span>
+            ))}
+          </div>
+        )}
       </div>
 
       <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
