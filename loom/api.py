@@ -145,7 +145,8 @@ class LoomProject:
         core = _core()
         p = self._p
         ops = [n.operation for n in core.path_nodes(p, core.resolve(p, version))]
-        return generate_script(ops, target, p.source_path, p.source_options, snapshot=p.snapshot_path, sha256=p.source_sha256)
+        return generate_script(ops, target, p.source_path, p.source_options, snapshot=p.snapshot_path,
+                               sha256=p.source_sha256, root_schema=core.engine.get_schema(p, core.root_id(p)))
 
     def export(self, path: str, version: Optional[str] = None, format: Optional[str] = None,
                allow_changed_source: bool = False) -> str:
@@ -199,7 +200,9 @@ class LoomProject:
     def __repr__(self) -> str:
         try:
             p = self._p
-            return (f"<LoomProject {p.name!r} id={self.id[:8]} steps={len(p.nodes) - 1} "
+            core = _core()
+            steps = len(core.path_nodes(p, core.head_node_id(p))) - 1
+            return (f"<LoomProject {p.name!r} id={self.id[:8]} steps={steps} "
                     f"branches={len(p.branches)} versions={len(p.versions)}>")
         except KeyError:
             return f"<LoomProject {self.id} (deleted)>"
@@ -222,9 +225,10 @@ def project(ref: Union[str, LoomProject]) -> LoomProject:
 
 
 def projects(as_frame: bool = True):
-    rows = [{"name": p.name, "id": p.id, "source": p.source_path, "steps": len(p.nodes) - 1,
+    core = _core()
+    rows = [{"name": p.name, "id": p.id, "source": p.source_path, "steps": len(core.path_nodes(p, core.head_node_id(p))) - 1,
              "branches": len(p.branches), "versions": len(p.versions), "pinned": bool(p.snapshot_path),
-             "created_at": p.created_at} for p in sorted(_core().store.all(), key=lambda p: p.created_at, reverse=True)]
+             "created_at": p.created_at} for p in sorted(core.store.all(), key=lambda p: p.created_at, reverse=True)]
     if not as_frame:
         return rows
     return pl.DataFrame(rows) if rows else pl.DataFrame(schema={"name": pl.String, "id": pl.String})

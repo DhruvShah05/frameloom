@@ -504,7 +504,7 @@ function App() {
             const isActive = node.id === activeNode;
             const isRoot = !node.parent_id;
             return (
-              <div key={node.id} className={`relative flex items-start gap-2 p-1.5 rounded-DEFAULT w-full z-10 group ${isActive ? 'bg-highlight-bg border border-bright-accent' : 'border border-transparent hover:bg-surface-container-high'} ${editing?.nodeId === node.id ? 'ring-2 ring-primary-container' : ''}`}>
+              <div key={node.id} className={`relative flex items-start gap-2 p-1.5 rounded-DEFAULT w-full ${stepMenu === node.id ? 'z-50' : 'z-10'} group ${isActive ? 'bg-highlight-bg border border-bright-accent' : 'border border-transparent hover:bg-surface-container-high'} ${editing?.nodeId === node.id ? 'ring-2 ring-primary-container' : ''}`}>
                 <button type="button" className="flex items-start gap-2 flex-1 min-w-0 text-left bg-transparent border-0 p-0 cursor-pointer"
                   onClick={() => !isActive && selectNode(project, node.id)}>
                   <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${isActive ? 'bg-primary-container text-white' : 'bg-white border border-grid-border group-hover:border-primary-container'}`}>

@@ -321,7 +321,7 @@ def list_projects():
             "name": p.name or os.path.basename(p.source_path),
             "source_path": p.source_path,
             "created_at": p.created_at,
-            "steps": len(p.nodes) - 1,
+            "steps": len(loom.path_nodes(p, loom.head_node_id(p))) - 1,
             "branches": len(p.branches),
             "versions": len(p.versions),
             "pinned": bool(p.snapshot_path),

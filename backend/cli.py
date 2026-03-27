@@ -132,7 +132,8 @@ def list_cmd():
     for p in projects:
         pin = "pinned" if p.snapshot_path else "unpinned"
         versions = ", ".join(p.versions) or "-"
-        click.echo(f"{p.id[:8]}  {p.name}  ({len(p.nodes) - 1} steps, {len(p.branches)} branches, {pin})")
+        steps = len(core.path_nodes(p, core.head_node_id(p))) - 1
+        click.echo(f"{p.id[:8]}  {p.name}  ({steps} steps, {len(p.branches)} branches, {pin})")
         click.echo(f"          source: {p.source_path}")
         click.echo(f"          versions: {versions}")
 

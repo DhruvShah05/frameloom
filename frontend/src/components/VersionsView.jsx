@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { api, formatValue } from '../api';
 
 const inputClass = "bg-white border border-grid-border rounded-DEFAULT px-2 h-[28px] text-[12px] outline-none focus:border-primary-container";
@@ -25,6 +25,15 @@ function MetricForm({ onAdd }) {
 
 export default function VersionsView({ project, onChanged, onOpenNode, onNewVersion, notify }) {
   const [sortBy, setSortBy] = useState({ key: 'created_at', desc: false });
+
+  // Metrics usually arrive from Python (loom.log_metrics) while this is open:
+  // refresh when the view opens and whenever the window regains focus.
+  useEffect(() => {
+    onChanged();
+    window.addEventListener('focus', onChanged);
+    return () => window.removeEventListener('focus', onChanged);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [editingNotes, setEditingNotes] = useState(null); // { name, text }
   const versions = useMemo(() => Object.values(project.versions || {}), [project]);
   const metricKeys = useMemo(() => Array.from(new Set(versions.flatMap(v => Object.keys(v.metrics || {})))).sort(), [versions]);

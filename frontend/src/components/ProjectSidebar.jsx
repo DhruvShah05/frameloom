@@ -4,7 +4,8 @@ import React from 'react';
 export default function ProjectSidebar({ project, activeNode, onSwitchBranch, schema, totalRows }) {
   if (!project) return null;
   const head = project.branches[project.head]?.head_node_id || project.head;
-  const steps = Object.keys(project.nodes).length - 1;
+  let steps = 0;
+  for (let cur = project.nodes[head]; cur && cur.parent_id; cur = project.nodes[cur.parent_id]) steps += 1;
   return (
     <aside className="bg-surface-container-low border-r border-surface-variant h-full w-[260px] flex flex-col shrink-0">
       <div className="p-4 border-b border-surface-variant">
