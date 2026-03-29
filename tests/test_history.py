@@ -3,7 +3,7 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.main import app, engine, projects
+from frameloom.main import app, engine, projects
 
 client = TestClient(app)
 
@@ -192,7 +192,7 @@ def test_versions_pin_a_step_and_carry_metrics(pid_chain):
 
 
 def test_resolve_refs(pid_chain):
-    from backend.main import loom
+    from frameloom.main import loom
 
     pid, (root, f, strip, srt) = pid_chain
     client.post(f"/project/{pid}/versions", json={"name": "v1", "node_id": f})

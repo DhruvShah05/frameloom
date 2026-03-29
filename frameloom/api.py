@@ -13,15 +13,15 @@ from typing import Any, Optional, Union
 
 import polars as pl
 
-from backend.core import SourceChangedError  # noqa: F401 - re-exported
+from .core import SourceChangedError  # noqa: F401 - re-exported
 
 _server_lock = threading.Lock()
 _server: dict[str, Any] = {}
 
 
 def _core():
-    # Imported lazily so LOOM_HOME can be set before the first call.
-    from backend.main import loom as core
+    # Imported lazily so FRAMELOOM_HOME can be set before the first call.
+    from .main import loom as core
 
     return core
 
@@ -53,32 +53,32 @@ def _free_port(preferred: int) -> int:
                 return port
             except OSError:
                 continue
-    raise RuntimeError("No free port found for the Loom server")
+    raise RuntimeError("No free port found for the FrameLoom server")
 
 
 def start_server(port: Optional[int] = None) -> str:
-    """Start the Loom web app in a background thread (once) and return its URL.
+    """Start the FrameLoom web app in a background thread (once) and return its URL.
 
-    Reuses a Loom server that is already running on the port.
+    Reuses a FrameLoom server that is already running on the port.
     """
     with _server_lock:
         if _server.get("url"):
             return _server["url"]
-        port = port or int(os.environ.get("LOOM_PORT", "8765"))
+        port = port or int(os.environ.get("FRAMELOOM_PORT") or os.environ.get("LOOM_PORT") or "8765")
         if not _healthy(port):
             import uvicorn
 
-            from backend.main import app
+            from .main import app
 
             port = _free_port(port)
             config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
             server = uvicorn.Server(config)
-            thread = threading.Thread(target=server.run, name="loom-server", daemon=True)
+            thread = threading.Thread(target=server.run, name="frameloom-server", daemon=True)
             thread.start()
             deadline = time.time() + 15
             while not _healthy(port):
                 if time.time() > deadline:
-                    raise RuntimeError("The Loom server did not start")
+                    raise RuntimeError("The FrameLoom server did not start")
                 time.sleep(0.05)
             _server["server"] = server
         _server["url"] = f"http://localhost:{port}"
@@ -91,7 +91,7 @@ def server_url() -> Optional[str]:
 
 # ----------------------------------------------------------------- project
 class LoomProject:
-    """A handle on a Loom project. Cheap to create; always reads fresh state."""
+    """A handle on a FrameLoom project. Cheap to create; always reads fresh state."""
 
     def __init__(self, project_id: str):
         self.id = project_id
@@ -140,7 +140,7 @@ class LoomProject:
         return out
 
     def code(self, version: Optional[str] = None, target: str = "polars") -> str:
-        from backend.codegen import generate_script
+        from .codegen import generate_script
 
         core = _core()
         p = self._p
@@ -151,7 +151,7 @@ class LoomProject:
     def export(self, path: str, version: Optional[str] = None, format: Optional[str] = None,
                allow_changed_source: bool = False) -> str:
         """Write a version to a file (format from the extension: csv, parquet, xlsx, json...)."""
-        from backend import sources
+        from . import sources
 
         fmt = format or {".csv": "csv", ".tsv": "tsv", ".parquet": "parquet", ".pq": "parquet", ".xlsx": "xlsx",
                          ".json": "json", ".ndjson": "ndjson", ".jsonl": "ndjson", ".arrow": "ipc",
@@ -194,7 +194,7 @@ class LoomProject:
     def _repr_html_(self) -> str:
         url = self.url
         return (f'<iframe src="{url}" style="width:100%;height:640px;border:1px solid #e5e2e1;border-radius:6px"></iframe>'
-                f'<div style="font:12px sans-serif;color:#504534">Loom project <b>{self.name}</b> · '
+                f'<div style="font:12px sans-serif;color:#504534">FrameLoom project <b>{self.name}</b> · '
                 f'<a href="{url}" target="_blank">open in a new tab</a></div>')
 
     def __repr__(self) -> str:
@@ -242,7 +242,7 @@ def open(path: str, name: Optional[str] = None, snapshot: Optional[bool] = None,
 
 
 def _frame_to_parquet(data, name: Optional[str]) -> tuple[str, str]:
-    """Freeze an in-memory DataFrame to LOOM_HOME/inputs/<hash>.parquet."""
+    """Freeze an in-memory DataFrame to FRAMELOOM_HOME/inputs/<hash>.parquet."""
     if not isinstance(data, (pl.DataFrame, pl.LazyFrame)):
         try:
             import pandas as pd  # type: ignore
@@ -252,7 +252,7 @@ def _frame_to_parquet(data, name: Optional[str]) -> tuple[str, str]:
             index_named = any(n is not None for n in data.index.names)
             data = pl.from_pandas(data.reset_index() if index_named else data)
         else:
-            raise TypeError("loom.view() takes a pandas or Polars DataFrame, a file path, or a LoomProject")
+            raise TypeError("frameloom.view() takes a pandas or Polars DataFrame, a file path, or a LoomProject")
     if isinstance(data, pl.LazyFrame):
         data = data.collect()
     buf = io.BytesIO()
@@ -269,7 +269,7 @@ def _frame_to_parquet(data, name: Optional[str]) -> tuple[str, str]:
 
 
 def view(data, name: Optional[str] = None, open_browser: Optional[bool] = None) -> LoomProject:
-    """Open data in the Loom UI and return the project.
+    """Open data in the FrameLoom UI and return the project.
 
     `data` can be a pandas/Polars DataFrame, a file path, a project name/id, or
     a LoomProject. In Jupyter the returned project renders inline.
@@ -298,5 +298,11 @@ def load(project_ref: Union[str, LoomProject], version: Optional[str] = None, pa
 
 
 def log_metrics(project_ref: Union[str, LoomProject], version: str, **metrics) -> dict:
-    """Record what a version of the data produced: loom.log_metrics("sales", "v2", val_auc=0.83)."""
+    """Record what a version of the data produced: frameloom.log_metrics("sales", "v2", val_auc=0.83)."""
     return project(project_ref).log_metrics(version, **metrics)
+
+
+def gc(dry_run: bool = False, keep_undo: bool = True) -> dict:
+    """Free space: drop steps nothing points at and files no project uses.
+    keep_undo=False also forgets undo/redo history."""
+    return _core().gc(dry_run=dry_run, keep_undo=keep_undo)

@@ -2,7 +2,7 @@ import pytest
 import os
 import tempfile
 from fastapi.testclient import TestClient
-from backend.main import app
+from frameloom.main import app
 
 client = TestClient(app)
 

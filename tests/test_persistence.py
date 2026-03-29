@@ -3,7 +3,7 @@ import os
 import shutil
 import tempfile
 from fastapi.testclient import TestClient
-from backend.main import app, projects, recipes_db, _load_persisted_state, PROJECTS_DIR, RECIPES_DIR
+from frameloom.main import app, projects, recipes_db, _load_persisted_state, PROJECTS_DIR, RECIPES_DIR
 
 client = TestClient(app)
 

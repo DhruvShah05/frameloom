@@ -563,3 +563,53 @@ class Loom:
         if save:
             self.store.save(project)
         return project, warnings
+
+    # =================================================================== gc
+    def gc(self, dry_run: bool = False, keep_undo: bool = True) -> dict:
+        """Remove what nothing points at any more.
+
+        * steps no branch or version can reach (with keep_undo, steps that
+          undo/redo could bring back are kept too);
+        * snapshot and DataFrame-input files no project uses;
+        * leftover temporary files.
+        """
+        report = {"projects": 0, "steps_removed": 0, "files_removed": [], "bytes_freed": 0, "dry_run": dry_run}
+        projects = self.store.all()
+        for p in projects:
+            roots = [b.head_node_id for b in p.branches.values()] + [v.node_id for v in p.versions.values()]
+            if keep_undo:
+                roots += [n for log in p.reflog.values() for n in log]
+                roots += [n for stack in p.redo_stack.values() for n in stack]
+                if p.head not in p.branches:
+                    roots.append(p.head)
+            keep: set[str] = set()
+            for nid in roots:
+                while nid and nid in p.nodes and nid not in keep:
+                    keep.add(nid)
+                    nid = p.nodes[nid].parent_id
+            drop = [nid for nid in p.nodes if nid not in keep]
+            if drop or (not keep_undo and (p.reflog or p.redo_stack)):
+                report["projects"] += 1
+                report["steps_removed"] += len(drop)
+                if not dry_run:
+                    for nid in drop:
+                        del p.nodes[nid]
+                    if not keep_undo:
+                        p.reflog, p.redo_stack = {}, {}
+                    self.engine.invalidate_project(p.id)
+                    self.store.save(p)
+
+        used = {os.path.abspath(p.snapshot_path) for p in projects if p.snapshot_path}
+        used |= {os.path.abspath(p.source_path) for p in projects}
+        for folder in (self.store.snapshots_dir, os.path.join(self.store.home, "inputs")):
+            if not os.path.isdir(folder):
+                continue
+            for name in os.listdir(folder):
+                path = os.path.abspath(os.path.join(folder, name))
+                if path in used or not os.path.isfile(path):
+                    continue
+                report["files_removed"].append(path)
+                report["bytes_freed"] += os.path.getsize(path)
+                if not dry_run:
+                    os.remove(path)
+        return report

@@ -66,7 +66,7 @@ class Project(BaseModel):
     source_sha256: Optional[str] = None
     source_signature: Optional[str] = None
     source_history: list[SourceRecord] = []
-    # An immutable copy of the source inside LOOM_HOME. When set, every
+    # An immutable copy of the source inside FRAMELOOM_HOME. When set, every
     # version replays from it, so versions never change under you.
     snapshot_path: Optional[str] = None
     snapshot_options: dict[str, Any] = {}

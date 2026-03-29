@@ -1,6 +1,6 @@
 import unittest
 from fastapi.testclient import TestClient
-from backend.main import app, projects, LoadRequest
+from frameloom.main import app, projects, LoadRequest
 import os
 
 client = TestClient(app)

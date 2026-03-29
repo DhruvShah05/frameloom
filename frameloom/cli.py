@@ -10,11 +10,12 @@ import webbrowser
 
 import click
 
+# The repository root, when running from a source checkout.
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class DefaultGroup(click.Group):
-    """`loom FILE` means `loom open FILE`; everything else is a subcommand."""
+    """`frameloom FILE` means `frameloom open FILE`; everything else is a subcommand."""
 
     def parse_args(self, ctx, args):
         if args and args[0] not in self.commands and args[0] not in ("--help", "-h"):
@@ -24,21 +25,22 @@ class DefaultGroup(click.Group):
 
 @click.group(cls=DefaultGroup)
 def cli():
-    """Loom - Git for Dataframes.
+    """FrameLoom - version control for dataframes.
 
     \b
-    loom data.csv                      open a file in the app
-    loom list                          projects, with versions and branches
-    loom versions PROJECT              a project's named versions and metrics
-    loom export PROJECT -v v2 -o x.parquet
-    loom code PROJECT -v v2 --target pandas
-    loom run RECIPE data.csv -o clean.parquet
-    loom recipes                       saved recipes
+    frameloom data.csv                      open a file in the app
+    frameloom list                          projects, with versions and branches
+    frameloom versions PROJECT              a project's named versions and metrics
+    frameloom export PROJECT -v v2 -o x.parquet
+    frameloom code PROJECT -v v2 --target pandas
+    frameloom run RECIPE data.csv -o clean.parquet
+    frameloom recipes                       saved recipes
+    frameloom gc [--dry-run]                free space used by old steps and files
     """
 
 
 def _core():
-    from backend.main import loom
+    from .main import loom
 
     return loom
 
@@ -73,7 +75,7 @@ def _legacy_recipes_flag(ctx, param, value):
 
 @cli.command("open", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
 @click.argument("filepath")
-@click.option("--port", default=8000, show_default=True, help="Port to run the backend on.")
+@click.option("--port", default=8000, show_default=True, help="Port for the web app.")
 @click.option("--dev", is_flag=True, help="Open the Vite dev server (http://localhost:5173) instead.")
 @click.option("--no-browser", is_flag=True, help="Start the server without opening a browser.")
 @click.option("--sheet", default=None, help="Excel sheet to open.")
@@ -99,7 +101,7 @@ def open_cmd(ctx, filepath, port, dev, no_browser, sheet, table, query, separato
         click.echo(f"Error: File '{filepath}' does not exist.", err=True)
         ctx.exit(1)
 
-    click.echo(f"Starting Loom for: {path}")
+    click.echo(f"Starting FrameLoom for: {path}")
     recipe_name = next((arg[2:] for arg in ctx.args if arg.startswith("--")), None)
     options = {k: v for k, v in {"sheet_name": sheet, "table": table, "query": query,
                                  "separator": separator, "format": fmt}.items() if v}
@@ -118,7 +120,7 @@ def open_cmd(ctx, filepath, port, dev, no_browser, sheet, table, query, separato
 
     if not no_browser:
         threading.Thread(target=open_browser, daemon=True).start()
-    uvicorn.run("backend.main:app", host="127.0.0.1", port=port, log_level="info")
+    uvicorn.run("frameloom.main:app", host="127.0.0.1", port=port, log_level="info")
 
 
 @cli.command("list")
@@ -127,7 +129,7 @@ def list_cmd():
     core = _core()
     projects = sorted(core.store.all(), key=lambda p: p.created_at, reverse=True)
     if not projects:
-        click.echo("No projects yet. Open a file with: loom data.csv")
+        click.echo("No projects yet. Open a file with: frameloom data.csv")
         return
     for p in projects:
         pin = "pinned" if p.snapshot_path else "unpinned"
@@ -170,7 +172,7 @@ def _check_source(core, p, allow_changed):
 @click.option("--allow-changed-source", is_flag=True, help="Export even if the source file changed.")
 def export_cmd(project, ref, out, fmt, allow_changed_source):
     """Write a version of PROJECT's data to a file."""
-    from loom.api import LoomProject
+    from .api import LoomProject
 
     core = _core()
     p = core.store.find(project)
@@ -188,7 +190,7 @@ def export_cmd(project, ref, out, fmt, allow_changed_source):
 @click.option("--target", type=click.Choice(["polars", "pandas"]), default="polars", show_default=True)
 def code_cmd(project, ref, target):
     """Print a Python script that reproduces a version of PROJECT."""
-    from loom.api import LoomProject
+    from .api import LoomProject
 
     p = _core().store.find(project)
     try:
@@ -233,6 +235,19 @@ def run_cmd(recipe, filepath, out, force, save_project, sheet, table, separator)
     click.echo(f"Applied '{r.name}' ({len(r.operations)} steps) -> {out}" + (f"  [project {project.id[:8]}]" if save_project else ""))
 
 
+@cli.command("gc")
+@click.option("--dry-run", is_flag=True, help="Only report what would be removed.")
+@click.option("--drop-undo", is_flag=True, help="Also forget undo/redo history (frees the most).")
+def gc_cmd(dry_run, drop_undo):
+    """Remove steps nothing points at and snapshot files no project uses."""
+    r = _core().gc(dry_run=dry_run, keep_undo=not drop_undo)
+    verb = "Would remove" if dry_run else "Removed"
+    click.echo(f"{verb} {r['steps_removed']} unused step(s) from {r['projects']} project(s) "
+               f"and {len(r['files_removed'])} file(s), {r['bytes_freed'] / 1048576:.1f} MB.")
+    for path in r["files_removed"]:
+        click.echo(f"  {path}")
+
+
 @cli.command("recipes")
 def recipes_cmd():
     """List saved recipes."""
@@ -243,6 +258,8 @@ def recipes_cmd():
 def build_frontend():
     """Install and build the web UI (needs Node.js)."""
     frontend_dir = os.path.join(BASE_DIR, "frontend")
+    if not os.path.isdir(frontend_dir):
+        raise click.ClickException("No frontend/ folder here: the installed package already includes the built UI.")
     click.echo("Building frontend...")
     subprocess.run(["npm", "install"], cwd=frontend_dir, check=True)
     subprocess.run(["npm", "run", "build"], cwd=frontend_dir, check=True)
@@ -250,7 +267,7 @@ def build_frontend():
 
 
 def main():
-    cli(prog_name="loom")
+    cli(prog_name="frameloom")
 
 
 if __name__ == "__main__":

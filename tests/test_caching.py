@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
-from backend.models import Project, Node, Operation
-from backend.engine import ExecutionEngine
+from frameloom.models import Project, Node, Operation
+from frameloom.engine import ExecutionEngine
 import polars as pl
 import os
 

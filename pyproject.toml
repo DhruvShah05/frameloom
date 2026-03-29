@@ -1,37 +1,61 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "loom"
+name = "frameloom"
 version = "0.1.0"
-description = "Git for Dataframes"
-authors = [
-    { name="Author", email="author@example.com" },
-]
+description = "Explore, clean and version dataframes in the browser - with branches, named versions and exportable Polars/pandas code."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "DhruvShah05" }]
 requires-python = ">=3.10"
+keywords = ["dataframe", "data cleaning", "data versioning", "polars", "pandas", "machine learning", "eda"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Framework :: FastAPI",
+    "Framework :: Jupyter",
+]
 dependencies = [
-    "fastapi",
-    "uvicorn",
-    "pydantic",
-    "polars",
-    "click",
-    "duckdb",
-    "websockets",
-    "pyarrow",
-    "fastexcel",
-    "xlsxwriter"
+    "polars>=1.20,<2",
+    "duckdb>=1.1,<2",
+    "pyarrow>=15",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pydantic>=2.6,<3",
+    "click>=8.1,<9",
+    "fastexcel>=0.12",
+    "xlsxwriter>=3.1",
 ]
 
 [project.optional-dependencies]
-pandas = ["pandas>=2"]
-dev = ["pytest", "httpx", "pandas>=2"]
-
-[tool.setuptools.packages.find]
-include = ["backend*", "loom*"]
+pandas = ["pandas>=2.2"]
+dev = ["pytest>=8", "httpx>=0.27", "pandas>=2.2", "openpyxl>=3.1", "build>=1.2"]
 
 [project.scripts]
-loom = "backend.cli:cli"
+frameloom = "frameloom.cli:main"
+fl = "frameloom.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["frameloom*"]
+
+[tool.setuptools.package-data]
+frameloom = ["static/**/*", "py.typed"]
 
 [tool.pytest.ini_options]
-testpaths = ["backend", "tests"]
+testpaths = ["tests"]

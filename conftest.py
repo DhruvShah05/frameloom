@@ -1,8 +1,8 @@
 """Test setup: keep every test's projects/recipes in a throwaway folder.
 
-Without this, tests that reset state would delete the real .loom/ directory.
+Without this, tests that reset state would delete your real FrameLoom data.
 """
 import os
 import tempfile
 
-os.environ["LOOM_HOME"] = tempfile.mkdtemp(prefix="loom-test-")
+os.environ["FRAMELOOM_HOME"] = tempfile.mkdtemp(prefix="frameloom-test-")

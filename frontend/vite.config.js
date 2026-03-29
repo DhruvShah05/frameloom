@@ -2,7 +2,7 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-// In `npm run dev`, forward API calls to the Loom backend.
+// In `npm run dev`, forward API calls to a running FrameLoom server.
 // Override with LOOM_API=http://127.0.0.1:9000 npm run dev
 const backend = process.env.LOOM_API || 'http://127.0.0.1:8000'
 const apiPaths = ['/project', '/projects', '/recipe', '/recipes', '/source', '/formats', '/health']
@@ -17,6 +17,9 @@ export default defineConfig({
     proxy: Object.fromEntries(apiPaths.map(p => [p, { target: backend, changeOrigin: false }])),
   },
   build: {
+    // The UI ships inside the Python package.
+    outDir: '../frameloom/static',
+    emptyOutDir: true,
     chunkSizeWarningLimit: 2500,
   },
 })

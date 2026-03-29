@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from polars.testing import assert_frame_equal
 
-from backend.main import app, engine, projects
+from frameloom.main import app, engine, projects
 
 client = TestClient(app)
 
@@ -430,8 +430,8 @@ def test_cache_is_invalidated_when_source_changes(tmp_path):
 
 
 def test_cache_is_bounded():
-    from backend.engine import ExecutionEngine
-    from backend.models import Project
+    from frameloom.engine import ExecutionEngine
+    from frameloom.models import Project
 
     small = ExecutionEngine(max_cache_bytes=10_000)
     proj = Project(id="p", source_path="x.csv", source_hash="", head="main")
@@ -529,8 +529,8 @@ def test_identical_files_share_one_snapshot(tmp_path):
 
 
 def test_unpinned_change_is_detected_and_can_be_accepted(tmp_path):
-    from backend.core import SourceChangedError
-    from backend.main import loom
+    from frameloom.core import SourceChangedError
+    from frameloom.main import loom
 
     p = tmp_path / "data.csv"
     p.write_text("a\n1\n2\n")
@@ -765,7 +765,7 @@ def test_sample_mode_affects_views_but_not_exports(tmp_path):
     # Exports, Python and steps that learn settings use all rows.
     r = client.post(f"/project/{pid}/export/data", json={"node_id": node, "format": "csv"})
     assert pl.read_csv(io.BytesIO(r.content)).height == 34
-    from backend.main import loom as core
+    from frameloom.main import loom as core
     assert core.dataframe(projects[pid], node).height == 34
     sc = _ok_op(pid, root, "scale", columns=["i"], method="minmax")
     assert projects[pid].nodes[sc].operation.params["stats"]["i"] == {"center": 0.0, "scale": 99.0}

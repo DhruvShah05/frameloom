@@ -1,7 +1,7 @@
 """On-disk storage for projects, recipes and source snapshots.
 
-Both the web server and the Python API (``import loom``) read and write the
-same LOOM_HOME folder, so every read checks the file's modification time and
+Both the web server and the Python API (``import frameloom``) read and write the
+same FRAMELOOM_HOME folder (default ~/.frameloom), so every read checks the file's modification time and
 reloads when another process saved a newer copy.
 """
 from __future__ import annotations
@@ -13,11 +13,9 @@ from typing import Optional
 
 from .models import Project, Recipe
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
 def default_home() -> str:
-    return os.environ.get("LOOM_HOME") or os.path.join(BASE_DIR, ".loom")
+    # LOOM_HOME is the pre-1.0 name of the setting; still honoured.
+    return os.environ.get("FRAMELOOM_HOME") or os.environ.get("LOOM_HOME") or os.path.join(os.path.expanduser("~"), ".frameloom")
 
 
 def atomic_write(path: str, text: str) -> None:

@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Loom backend", lifespan=lifespan)
+app = FastAPI(title="FrameLoom", lifespan=lifespan)
 
 
 @app.exception_handler(pl.exceptions.PolarsError)
@@ -424,7 +424,7 @@ def export_data(id: str, req: ExportDataRequest):
     _require_node(project, req.node_id)
     lf = engine.build_plan(project, req.node_id)
     media_type, ext = sources.EXPORT_FORMATS[req.format]
-    tmp_dir = tempfile.mkdtemp(prefix="loom-export-")
+    tmp_dir = tempfile.mkdtemp(prefix="frameloom-export-")
     base = os.path.splitext(project.name or "export")[0] or "export"
     filename = re.sub(r"[^\w.\-]+", "_", base) + ext
     out_path = os.path.join(tmp_dir, filename)
@@ -668,6 +668,13 @@ def diff_nodes(id: str, node_a: str, node_b: str):
     return engine.diff(project, node_a, node_b, sampled=True)
 
 
-frontend_dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
-if os.path.exists(frontend_dist):
-    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+# The built UI ships inside the package (frameloom/static). In a source checkout
+# it appears after `npm run build` in frontend/.
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if os.path.exists(os.path.join(STATIC_DIR, "index.html")):
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="frontend")
+else:
+    @app.get("/")
+    def ui_missing():
+        return JSONResponse(status_code=503, content={
+            "detail": "The web UI isn't built. In a source checkout run: frameloom build-frontend"})

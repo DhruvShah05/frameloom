@@ -1,4 +1,4 @@
-"""The Python API (import loom) and the command line."""
+"""The Python API (import frameloom) and the command line."""
 import os
 
 import pandas as pd
@@ -6,8 +6,8 @@ import polars as pl
 import pytest
 from click.testing import CliRunner
 
-import loom
-from backend.cli import cli
+import frameloom as loom
+from frameloom.cli import cli
 
 
 @pytest.fixture
@@ -18,7 +18,7 @@ def csv(tmp_path):
 
 
 def test_open_steps_versions_and_load(csv):
-    from backend.main import loom as core
+    from frameloom.main import loom as core
 
     proj = loom.open(csv, name="sales-test")
     p = core.store.get(proj.id)
@@ -51,7 +51,7 @@ def test_view_dataframes_without_opening_a_browser():
     assert proj.df().to_dicts() == [{"a": 1, "b": "x"}, {"a": 2, "b": "y"}]
     # The same frame again reuses the frozen input file.
     proj2 = loom.view(pl.from_pandas(pdf), open_browser=False)
-    from backend.main import loom as core
+    from frameloom.main import loom as core
     assert core.store.get(proj.id).source_path == core.store.get(proj2.id).source_path
     with pytest.raises(TypeError):
         loom.view(42, open_browser=False)
@@ -79,8 +79,8 @@ def test_changed_source_is_refused_unless_allowed(tmp_path):
 
 
 def test_cli(csv, tmp_path):
-    from backend.main import loom as core
-    from backend.models import Operation, Recipe
+    from frameloom.main import loom as core
+    from frameloom.models import Operation, Recipe
 
     proj = loom.open(csv, name="cli-test")
     p = core.store.get(proj.id)
@@ -117,3 +117,27 @@ def test_cli(csv, tmp_path):
     assert r.exit_code != 0 and "Missing column" in r.output
     r = runner.invoke(cli, ["--recipes"])  # old flag still works
     assert "north-only" in r.output
+
+
+def test_gc_removes_unreachable_steps_and_unused_files(tmp_path):
+    from frameloom.main import loom as core
+
+    p = tmp_path / "g.csv"
+    p.write_text("a\n1\n2\n3\n")
+    proj = loom.open(str(p))
+    pr = core.store.get(proj.id)
+    first = core.add_step(pr, core.head_node_id(pr), {"type": "filter_rows", "params": {"column": "a", "operator": "gt", "value": 1}})
+    core.add_step(pr, first.id, {"type": "limit_rows", "params": {"n": 1}})
+    core.edit_step(pr, first.id, {"column": "a", "operator": "gt", "value": 0})  # leaves the old chain behind
+    orphan = os.path.join(core.store.snapshots_dir, "deadbeef__old.csv")
+    open(orphan, "w").write("x")
+    before = len(pr.nodes)
+
+    dry = loom.gc(dry_run=True, keep_undo=False)
+    assert dry["steps_removed"] == 2 and orphan in dry["files_removed"] and os.path.exists(orphan)
+    assert loom.gc()["steps_removed"] == 0  # undo still needs the old chain
+    loom.gc(keep_undo=False)
+    pr = core.store.get(proj.id)
+    assert len(pr.nodes) == before - 2 and not os.path.exists(orphan)
+    assert os.path.exists(pr.snapshot_path)
+    assert proj.df()["a"].to_list() == [1]

@@ -1,6 +1,6 @@
 import ast
-from backend.models import Operation
-from backend.codegen import generate_script
+from frameloom.models import Operation
+from frameloom.codegen import generate_script
 
 def test_generate_script_escaping():
     weird_col = 'col"with\\quotes\nand spaces'

@@ -1,4 +1,4 @@
-# Loom — Git for Dataframes
+# FrameLoom — version control for dataframes
 
 Explore and clean a dataset in the browser instead of writing throwaway pandas
 code, with every change recorded as a step you can branch, edit, version and
@@ -10,38 +10,43 @@ export as Python.
   encoding, scaling and train/test splits, plus a raw SQL step.
 - **Version it**: branches, editable history, named versions with model
   metrics, and snapshots so a version always means the same rows.
-- **Use it from code**: `loom.load("sales", "v2")` in a notebook, or export the
+- **Use it from code**: `fl.load("sales", "v2")` in a notebook, or export the
   pipeline as a Polars or pandas script.
 
 ## Install
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+pip install frameloom            # add [pandas] for pandas export and DataFrames
+```
+
+From a source checkout (needs Node.js for the UI):
+
+```bash
 pip install -e ".[dev]"
-loom build-frontend          # needs Node.js; only once
+make ui                          # builds the web UI into frameloom/static
 ```
 
 ## Quick start
 
 ```bash
-loom data.csv                # opens the app in your browser
+frameloom data.csv               # opens the app in your browser (`fl` is a short alias)
 ```
 
 Or from a notebook:
 
 ```python
-import loom
+import frameloom as fl
 
-proj = loom.view(df)                    # a pandas/Polars DataFrame or a file path; renders inline in Jupyter
+proj = fl.view(df)                    # a pandas/Polars DataFrame or a file path; renders inline in Jupyter
 # ... clean it up in the UI, then "Save Version" as v1 ...
-train = loom.load(proj, "v1", pandas=True)
-loom.log_metrics(proj, "v1", val_auc=0.83)
+train = fl.load(proj, "v1", pandas=True)
+fl.log_metrics(proj, "v1", val_auc=0.83)
 proj.versions()                         # every version with its metrics, to find the best data
 ```
 
 ## Version control for datasets
 
-| Idea | What it means in Loom |
+| Idea | What it means in FrameLoom |
 |---|---|
 | Step | One recorded change (a filter, an encoding, a cell edit). Data is never copied; steps are replayed from the source. |
 | Branch | A line of steps. Applying a step to an older point starts a branch, so you can try alternatives in parallel. |
@@ -49,7 +54,7 @@ proj.versions()                         # every version with its metrics, to fin
 | Copy / merge | Copy a step to another branch, or merge a branch: its new steps replay on top. Steps already copied are skipped. |
 | Undo / redo | Undo reverts the last change to a branch, including edits and merges (⌘/Ctrl+Z). |
 | Version | A fixed name for a step (`baseline`, `v2-no-outliers`) with a message, notes and metrics. Versions never move. |
-| Snapshot | On open, Loom keeps a read-only copy of the file (content-addressed by SHA-256, up to `LOOM_SNAPSHOT_MAX_MB`, default 2048). Versions replay from it, so they never change when the file does. Without a snapshot, Loom notices when the file changes and asks before using the new data. |
+| Snapshot | On open, FrameLoom keeps a read-only copy of the file (content-addressed by SHA-256, up to `LOOM_SNAPSHOT_MAX_MB`, default 2048). Versions replay from it, so they never change when the file does. Without a snapshot, FrameLoom notices when the file changes and asks before using the new data. |
 | Cell edits | Remember the row's values, not its position, so they follow the row when earlier steps change. |
 
 Steps that learn from the data (one-hot categories, scaler means, clip limits)
@@ -57,15 +62,15 @@ learn once and store what they learned, like a fitted scikit-learn
 transformer. Recipes and exported code reuse the same values. Use
 **"learn only from rows where split = train"** to keep test rows from leaking.
 
-Work on a **sample** (status bar) for speed; exports, `loom.load()`,
+Work on a **sample** (status bar) for speed; exports, `fl.load()`,
 recipes and learned settings always use every row.
 
 ## Python API
 
 ```python
-loom.open("sales.xlsx", sheet_name="2024")   # new project from a file (reader options as keywords)
-loom.project("sales")                        # by name, id prefix, or data file path
-loom.projects()                              # table of projects
+fl.open("sales.xlsx", sheet_name="2024")   # new project from a file (reader options as keywords)
+fl.project("sales")                        # by name, id prefix, or data file path
+fl.projects()                              # table of projects
 
 proj.df("v2")                                # Polars DataFrame at a version / branch / step id
 proj.df("v2", pandas=True)
@@ -78,19 +83,20 @@ proj.export("v3.parquet", "v3")
 proj.url                                     # open in the browser
 ```
 
-`loom.load()` refuses (raises `loom.SourceChangedError`) when an unpinned
+`fl.load()` refuses (raises `fl.SourceChangedError`) when an unpinned
 source file changed, unless you pass `allow_changed_source=True`.
 
 ## Command line
 
 ```bash
-loom data.csv [--sheet S] [--table T] [--query Q] [--separator ;] [--port 8000]
-loom list                                  # projects, branches, versions
-loom versions sales                        # versions and their metrics
-loom export sales -v v2 -o train.parquet   # write a version to a file
-loom code sales -v v2 --target pandas      # print the pipeline as Python
-loom run my-recipe new-month.csv -o clean.parquet   # apply a recipe, no UI
-loom recipes
+frameloom data.csv [--sheet S] [--table T] [--query Q] [--separator ;] [--port 8000]
+frameloom list                                  # projects, branches, versions
+frameloom versions sales                        # versions and their metrics
+frameloom export sales -v v2 -o train.parquet   # write a version to a file
+frameloom code sales -v v2 --target pandas      # print the pipeline as Python
+frameloom run my-recipe new-month.csv -o clean.parquet   # apply a recipe, no UI
+frameloom recipes
+frameloom gc --dry-run                     # space used by old steps and unused snapshots
 ```
 
 ## Formats
@@ -101,16 +107,26 @@ http/s3/gs URLs. Export: CSV, TSV, Parquet, Excel, JSON, NDJSON, Arrow.
 
 ## Where things live
 
-`LOOM_HOME` (default `./.loom`) holds `projects/`, `recipes/`, `snapshots/`
-and `inputs/` (DataFrames opened with `loom.view`). The web app and the
-Python API share it. The server only accepts requests from localhost.
+`FRAMELOOM_HOME` (default `~/.frameloom`) holds `projects/`, `recipes/`,
+`snapshots/` and `inputs/` (DataFrames opened with `fl.view`). The web app and
+the Python API share it. `frameloom gc` removes steps nothing points at and
+files no project uses. The server only accepts requests from localhost.
 
 ## Development
 
 ```bash
-pytest                         # backend, Python API and CLI tests
-cd frontend && npm run dev     # UI with hot reload, proxied to a running `loom` server on :8000
+make test                      # backend, Python API and CLI tests
+cd frontend && npm run dev     # UI with hot reload, proxied to a running `frameloom` server on :8000
+make dist                      # wheel + sdist with the UI inside
 ```
+
+Releases: bump the version in `pyproject.toml` and `frameloom/__init__.py`,
+update `CHANGELOG.md`, then push a `vX.Y.Z` tag; GitHub Actions builds and
+publishes to PyPI.
 
 The tests check that, for every step type, the exported Polars **and**
 pandas scripts produce exactly the same table as the app.
+
+## License
+
+MIT
