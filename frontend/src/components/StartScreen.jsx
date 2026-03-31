@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api';
+import { useDialogs } from './ui';
 
 const inputClass = "w-full bg-white border border-grid-border rounded-DEFAULT px-2 h-row-height font-grid-data text-grid-data focus:border-primary-container focus:ring-1 focus:ring-bright-accent outline-none";
 const labelClass = "font-ui-small text-ui-small text-on-surface-variant";
@@ -17,6 +18,7 @@ export default function StartScreen({ recipes, onLoad, onOpenProject, onError, b
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [recent, setRecent] = useState([]);
   const [pin, setPin] = useState(null); // null = server default (copy files up to 2 GB)
+  const { confirm } = useDialogs();
 
   const refreshRecent = () => api('/projects').then(setRecent).catch(() => {});
   useEffect(() => { refreshRecent(); }, []);
@@ -49,7 +51,7 @@ export default function StartScreen({ recipes, onLoad, onOpenProject, onError, b
   };
 
   const removeProject = async p => {
-    if (!window.confirm(`Delete the saved history for "${p.name}"? The data file itself is not touched. This can't be undone.`)) return;
+    if (!(await confirm(`Delete “${p.name}”?`, "Its steps, branches and versions are deleted. The data file itself is not touched. This can't be undone.", { confirmLabel: 'Delete project', danger: true }))) return;
     try {
       await api(`/project/${p.id}`, { method: 'DELETE' });
       refreshRecent();

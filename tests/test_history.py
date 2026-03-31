@@ -203,3 +203,12 @@ def test_resolve_refs(pid_chain):
     assert loom.resolve(p, strip[:8]) == strip
     with pytest.raises(KeyError):
         loom.resolve(p, "nope")
+
+
+def test_copying_a_step_elsewhere_keeps_you_on_your_branch(pid_chain):
+    pid, (root, f, strip, srt) = pid_chain
+    client.post(f"/project/{pid}/branch", json={"name": "other", "from_node_id": root})
+    client.post(f"/project/{pid}/checkout", json={"target": "main"})
+    r = client.post(f"/project/{pid}/cherry-pick", json={"node_ids": [strip], "branch": "other"}).json()
+    assert projects[pid].head == "main" and r["node_id"] == head(pid) and r["copied_to"] == "other"
+    assert projects[pid].nodes[head(pid, "other")].operation.label == "Strip name"

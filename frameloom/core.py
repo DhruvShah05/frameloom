@@ -412,8 +412,15 @@ class Loom:
             if node.parent_id is None:
                 raise HistoryError("The load step can't be copied")
             operations.append(node)
+        previous_head = project.head
         tip = self._replay(project, project.branches[branch].head_node_id, operations)
-        return self._finish(project, branch, tip)
+        result = self._finish(project, branch, tip)
+        if previous_head != branch:  # copying elsewhere shouldn't move you
+            project.head = previous_head
+            self.store.save(project)
+            result["node_id"] = self.head_node_id(project)
+        result["copied_to"] = branch
+        return result
 
     def merge_base(self, project: Project, a: str, b: str) -> str:
         ancestors = {n.id for n in self.path_nodes(project, a)}

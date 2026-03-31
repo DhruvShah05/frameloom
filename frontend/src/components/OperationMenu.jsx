@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { OP_GROUPS, OPS_BY_TYPE, FILTER_OPERATORS, NO_VALUE_OPERATORS, AGG_OPTIONS, buildParams, paramsToForm } from '../opsConfig';
 import { isNumericType, isTextType, isDateType } from '../api';
+import OpPicker from './OpPicker';
+import { Spinner } from './ui';
 
 const selectClass = "w-full bg-white border border-grid-border rounded-DEFAULT px-2 h-row-height font-grid-data text-grid-data focus:border-primary-container focus:ring-1 focus:ring-bright-accent outline-none";
 const inputClass = selectClass;
@@ -35,7 +37,7 @@ function MultiColumnSelect({ value = [], onChange, columns }) {
       <div className="max-h-[132px] overflow-y-auto grid-scroll py-1">
         {shown.map(c => (
           <label key={c} className="flex items-center gap-2 px-2 py-[2px] text-[12px] cursor-pointer hover:bg-highlight-bg">
-            <input type="checkbox" checked={value.includes(c)} onChange={() => toggle(c)} className="accent-[#c98f00]" />
+            <input type="checkbox" checked={value.includes(c)} onChange={() => toggle(c)} className="accent-[#c98f00]" aria-label={c} />
             <span className="truncate">{c}</span>
             {value.includes(c) && value.length > 1 && <span className="ml-auto text-[10px] text-on-surface-variant">{value.indexOf(c) + 1}</span>}
           </label>
@@ -85,7 +87,7 @@ function ConditionsEditor({ value = [], combine = 'and', onChange, onCombine, sc
                   <input type="checkbox" checked={!!c.ignore_case} onChange={e => update(i, { ignore_case: e.target.checked })} className="accent-[#c98f00]" /> Ignore case
                 </label>
               )}
-              {value.length > 1 && <button type="button" className={`${smallBtn} ml-auto text-error`} onClick={() => onChange(value.filter((_, j) => j !== i))}>Remove</button>}
+              {value.length > 1 && <button type="button" className={`${smallBtn} ml-auto text-error`} onClick={() => onChange(value.filter((_, j) => j !== i))} aria-label={`Remove condition ${i + 1}`}>Remove</button>}
             </div>
           </div>
         );
@@ -274,20 +276,14 @@ export default function OperationMenu({ onApplyOp, onSaveEdit, onCancelEdit, edi
 
   return (
     <div className={`p-4 border-b border-grid-border flex flex-col gap-3 ${editing ? 'bg-highlight-bg' : ''}`}>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 pr-8">
         <h3 className="font-panel-title text-panel-title text-on-surface m-0">{editing ? 'Edit step' : 'Transform'}</h3>
         {editing && <button type="button" className={`${smallBtn} ml-auto`} onClick={onCancelEdit}>Cancel</button>}
       </div>
       {editing && <p className="m-0 text-[11px] text-on-surface-variant">Changing “{editing.label}”. Later steps on this branch will replay on top; undo restores the old history.</p>}
       <div className="flex flex-col gap-1">
         <label className={labelClass}>Operation</label>
-        <select className={selectClass} value={opType} disabled={!!editing} onChange={e => chooseOp(e.target.value)}>
-          {OP_GROUPS.filter(g => !g.timeOnly || hasTime).map(g => (
-            <optgroup key={g.name} label={g.name}>
-              {g.ops.map(o => <option key={o.type} value={o.type}>{o.label}</option>)}
-            </optgroup>
-          ))}
-        </select>
+        <OpPicker groups={OP_GROUPS.filter(g => !g.timeOnly || hasTime)} value={opType} onChange={chooseOp} disabled={!!editing} />
       </div>
 
       {def.fields.map(renderField)}
@@ -302,7 +298,7 @@ export default function OperationMenu({ onApplyOp, onSaveEdit, onCancelEdit, edi
       )}
 
       <button disabled={busy} className="mt-1 w-full bg-primary-container text-white font-ui-label text-ui-label h-row-height rounded-DEFAULT hover:bg-primary transition-colors flex items-center justify-center gap-1 disabled:opacity-60 disabled:cursor-wait" onClick={apply}>
-        {busy ? 'Working…' : editing ? 'Save changes' : viewingEarlier && insert ? 'Insert step' : 'Apply'}
+        {busy ? <><Spinner /> Working…</> : editing ? 'Save changes' : viewingEarlier && insert ? 'Insert step' : 'Apply'}
       </button>
     </div>
   );

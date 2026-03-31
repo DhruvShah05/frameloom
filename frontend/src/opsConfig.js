@@ -21,16 +21,16 @@ export const OP_GROUPS = [
   {
     name: 'Columns',
     ops: [
-      { type: 'select_columns', label: 'Keep columns', fields: [{ key: 'columns', label: 'Columns to keep (in this order)', kind: 'columns' }] },
-      { type: 'drop_column', label: 'Drop columns', fields: [{ key: 'columns', label: 'Columns', kind: 'columns' }] },
+      { type: 'select_columns', label: 'Keep columns', desc: 'Keep only the columns you pick, in that order', fields: [{ key: 'columns', label: 'Columns to keep (in this order)', kind: 'columns' }] },
+      { type: 'drop_column', label: 'Drop columns', desc: 'Remove columns', fields: [{ key: 'columns', label: 'Columns', kind: 'columns' }] },
       {
-        type: 'rename_column', label: 'Rename column',
+        type: 'rename_column', label: 'Rename column', desc: 'Give a column a new name',
         fields: [{ key: 'oldCol', label: 'Column', kind: 'column' }, { key: 'newName', label: 'New name', kind: 'text' }],
         toParams: p => ({ mapping: { [p.oldCol]: p.newName } }),
         fromParams: p => { const [oldCol, newName] = Object.entries(p.mapping || {})[0] || []; return { oldCol, newName }; },
       },
       {
-        type: 'cast_column', label: 'Change type',
+        type: 'cast_column', label: 'Change type', desc: 'Turn text into numbers, dates or true/false (and back)',
         defaults: { dtype: 'Float64' },
         fields: [
           { key: 'columns', label: 'Columns', kind: 'columns' },
@@ -40,7 +40,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'add_column', label: 'Add calculated column',
+        type: 'add_column', label: 'Add calculated column', desc: 'New column from a formula, e.g. price * qty',
         fields: [
           { key: 'name', label: 'New column name', kind: 'text' },
           { key: 'expression', label: 'Formula (SQL)', kind: 'textarea', placeholder: 'price * qty\nCASE WHEN age >= 18 THEN \'adult\' ELSE \'minor\' END\nUPPER(name)' },
@@ -53,18 +53,18 @@ export const OP_GROUPS = [
     name: 'Rows',
     ops: [
       {
-        type: 'filter_rows', label: 'Filter rows',
+        type: 'filter_rows', label: 'Filter rows', desc: 'Keep rows that match conditions (AND / OR)',
         defaults: { conditions: [{ column: '', operator: 'eq', value: '' }], combine: 'and' },
         fields: [{ key: 'conditions', label: 'Keep rows where', kind: 'conditions' }],
       },
       {
-        type: 'sort', label: 'Sort',
+        type: 'sort', label: 'Sort', desc: 'Order rows by one or more columns',
         defaults: { by: [{ column: '', descending: false }] },
         fields: [{ key: 'by', label: 'Sort by', kind: 'sortby' }],
         toParams: p => ({ by: (p.by || []).filter(b => b.column) }),
       },
       {
-        type: 'limit_rows', label: 'Keep top / first N',
+        type: 'limit_rows', label: 'Keep top / first N', desc: 'First N rows, or the top N by a column',
         defaults: { n: 10, descending: true },
         fields: [
           { key: 'n', label: 'Number of rows', kind: 'number' },
@@ -73,7 +73,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'sample_rows', label: 'Random sample',
+        type: 'sample_rows', label: 'Random sample', desc: 'A random subset of rows (repeatable with a seed)',
         defaults: { mode: 'n', n: 1000, seed: 42 },
         fields: [
           { key: 'mode', label: 'Sample by', kind: 'select', options: [['n', 'Number of rows'], ['fraction', 'Percentage']] },
@@ -85,7 +85,7 @@ export const OP_GROUPS = [
         fromParams: p => (p.fraction ? { mode: 'fraction', percent: p.fraction * 100, seed: p.seed } : { mode: 'n', n: p.n, seed: p.seed }),
       },
       {
-        type: 'drop_duplicates', label: 'Remove duplicates',
+        type: 'drop_duplicates', label: 'Remove duplicates', desc: 'Remove repeated rows, optionally on some columns',
         defaults: { keep: 'first' },
         fields: [
           { key: 'columns', label: 'Compare on (empty = all columns)', kind: 'columns', optional: true },
@@ -98,7 +98,7 @@ export const OP_GROUPS = [
     name: 'Text',
     ops: [
       {
-        type: 'text_transform', label: 'Clean up text',
+        type: 'text_transform', label: 'Clean up text', desc: 'Trim spaces, change case, collapse spacing, length',
         defaults: { transform: 'strip' },
         fields: [
           { key: 'columns', label: 'Columns', kind: 'columns', types: 'text' },
@@ -107,7 +107,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'split_column', label: 'Split column',
+        type: 'split_column', label: 'Split column', desc: 'Split one column into several on a delimiter',
         defaults: { delimiter: ',', parts: 2 },
         fields: [
           { key: 'column', label: 'Column', kind: 'column' },
@@ -118,7 +118,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'regex_extract', label: 'Extract with pattern',
+        type: 'regex_extract', label: 'Extract with pattern', desc: 'Pull part of the text out with a pattern',
         defaults: { group: 1 },
         fields: [
           { key: 'column', label: 'Column', kind: 'column' },
@@ -128,7 +128,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'find_replace', label: 'Find & replace',
+        type: 'find_replace', label: 'Find & replace', desc: 'Replace text or whole values',
         defaults: { mode: 'contains', replace: '' },
         fields: [
           { key: 'columns', label: 'Columns', kind: 'columns' },
@@ -138,7 +138,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'parse_dates', label: 'Parse dates',
+        type: 'parse_dates', label: 'Parse dates', desc: 'Turn text into real dates',
         defaults: { to: 'date' },
         fields: [
           { key: 'column', label: 'Text column', kind: 'column', types: 'text' },
@@ -153,7 +153,7 @@ export const OP_GROUPS = [
     name: 'Missing values',
     ops: [
       {
-        type: 'fill_missing', label: 'Fill empty cells',
+        type: 'fill_missing', label: 'Fill empty cells', desc: 'Fill empty cells with a value, previous value, mean…',
         defaults: { strategy: 'value' },
         fields: [
           { key: 'columns', label: 'Columns', kind: 'columns' },
@@ -163,7 +163,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'drop_missing', label: 'Drop rows with empty cells',
+        type: 'drop_missing', label: 'Drop rows with empty cells', desc: 'Remove rows with empty cells',
         defaults: { how: 'any' },
         fields: [
           { key: 'columns', label: 'Check columns (empty = all)', kind: 'columns', optional: true },
@@ -176,7 +176,7 @@ export const OP_GROUPS = [
     name: 'Calculate',
     ops: [
       {
-        type: 'bin_column', label: 'Group numbers into ranges',
+        type: 'bin_column', label: 'Group numbers into ranges', desc: 'Group numbers into ranges, e.g. age bands',
         defaults: { method: 'breaks' },
         fields: [
           { key: 'column', label: 'Numeric column', kind: 'column', types: 'numeric' },
@@ -188,7 +188,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'window', label: 'Rank / running total / lag',
+        type: 'window', label: 'Rank / running total / lag', desc: 'Rank, running totals, previous/next value, % change',
         defaults: { function: 'cum_sum', offset: 1 },
         fields: [
           { key: 'function', label: 'Calculation', kind: 'select', options: [['cum_sum', 'Running total'], ['cum_max', 'Running max'], ['cum_min', 'Running min'], ['cum_count', 'Running count'], ['rank', 'Rank'], ['dense_rank', 'Dense rank'], ['row_number', 'Row number'], ['lag', 'Previous value (lag)'], ['lead', 'Next value (lead)'], ['diff', 'Difference from previous'], ['pct_change', '% change from previous']] },
@@ -206,7 +206,7 @@ export const OP_GROUPS = [
     name: 'Machine learning prep',
     ops: [
       {
-        type: 'train_test_split', label: 'Train / validation / test split',
+        type: 'train_test_split', label: 'Train / validation / test split', desc: 'Add a train / validation / test column (exact sizes)',
         defaults: { test_size: 20, val_size: 0, seed: 42, column: 'split' },
         fields: [
           { key: 'test_size', label: 'Test %', kind: 'number' },
@@ -221,7 +221,7 @@ export const OP_GROUPS = [
         fromParams: p => ({ ...p, test_size: Math.round(p.test_size * 1000) / 10, val_size: Math.round((p.val_size || 0) * 1000) / 10 }),
       },
       {
-        type: 'one_hot_encode', label: 'One-hot encode',
+        type: 'one_hot_encode', label: 'One-hot encode', desc: 'One 0/1 column per category',
         defaults: { max_categories: 20, drop_original: true },
         fields: [
           { key: 'columns', label: 'Category columns', kind: 'columns' },
@@ -232,7 +232,7 @@ export const OP_GROUPS = [
         hint: 'Categories are learned now and reused when this step replays or runs as a recipe.',
       },
       {
-        type: 'label_encode', label: 'Label encode (category → number)',
+        type: 'label_encode', label: 'Label encode (category → number)', desc: 'Replace categories with numbers',
         defaults: { order: 'alphabetical', suffix: '_code' },
         fields: [
           { key: 'columns', label: 'Category columns', kind: 'columns' },
@@ -243,7 +243,7 @@ export const OP_GROUPS = [
         hint: 'Unseen values become -1.',
       },
       {
-        type: 'scale', label: 'Scale numbers',
+        type: 'scale', label: 'Scale numbers', desc: 'Standardize or min-max scale numbers',
         defaults: { method: 'standard' },
         fields: [
           { key: 'columns', label: 'Numeric columns', kind: 'columns', types: 'numeric' },
@@ -253,7 +253,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'clip_outliers', label: 'Clip outliers',
+        type: 'clip_outliers', label: 'Clip outliers', desc: 'Cap extreme values (IQR, percentiles or fixed)',
         defaults: { method: 'iqr', k: 1.5, lower_pct: 1, upper_pct: 99 },
         fields: [
           { key: 'columns', label: 'Numeric columns', kind: 'columns', types: 'numeric' },
@@ -267,7 +267,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'date_parts', label: 'Date features',
+        type: 'date_parts', label: 'Date features', desc: 'Year, month, weekday… as new columns',
         defaults: { parts: ['year', 'month', 'day', 'weekday'] },
         fields: [
           { key: 'column', label: 'Date column', kind: 'column', types: 'date' },
@@ -281,7 +281,7 @@ export const OP_GROUPS = [
     name: 'Reshape',
     ops: [
       {
-        type: 'group_by', label: 'Group & summarize',
+        type: 'group_by', label: 'Group & summarize', desc: 'Summaries per group: sum, mean, count…',
         defaults: { aggs: [{ column: '', agg: 'count' }] },
         fields: [
           { key: 'by', label: 'Group by', kind: 'columns' },
@@ -289,7 +289,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'pivot', label: 'Pivot (rows → columns)',
+        type: 'pivot', label: 'Pivot (rows → columns)', desc: 'Turn row values into columns',
         defaults: { agg: 'first' },
         fields: [
           { key: 'index', label: 'Row labels', kind: 'columns' },
@@ -299,7 +299,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'unpivot', label: 'Unpivot (columns → rows)',
+        type: 'unpivot', label: 'Unpivot (columns → rows)', desc: 'Turn columns into rows (wide → long)',
         fields: [
           { key: 'index', label: 'Columns to keep as-is', kind: 'columns' },
           { key: 'on', label: 'Columns to turn into rows (empty = all others)', kind: 'columns', optional: true },
@@ -313,7 +313,7 @@ export const OP_GROUPS = [
     name: 'Combine',
     ops: [
       {
-        type: 'join', label: 'Join another file',
+        type: 'join', label: 'Join another file', desc: 'Add columns from another file by matching keys',
         defaults: { how: 'left' },
         fields: [
           { key: 'path', label: 'File path', kind: 'path' },
@@ -326,7 +326,7 @@ export const OP_GROUPS = [
         fromParams: p => ({ ...p, right_on: (p.right_on || []).join(', ') === (p.left_on || []).join(', ') ? '' : (p.right_on || []).join(', ') }),
       },
       {
-        type: 'append_rows', label: 'Append rows from file',
+        type: 'append_rows', label: 'Append rows from file', desc: 'Stack rows from another file underneath',
         defaults: { how: 'diagonal_relaxed' },
         fields: [
           { key: 'path', label: 'File path', kind: 'path' },
@@ -340,7 +340,7 @@ export const OP_GROUPS = [
     timeOnly: true,
     ops: [
       {
-        type: 'resample', label: 'Resample (time buckets)',
+        type: 'resample', label: 'Resample (time buckets)', desc: 'Summarize by time bucket: hour, day, month…',
         defaults: { agg: 'mean', freq: '1d' },
         fields: [
           { key: 'time_col', label: 'Time column', kind: 'column', types: 'date' },
@@ -350,7 +350,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'rolling', label: 'Rolling window',
+        type: 'rolling', label: 'Rolling window', desc: 'Moving average / sum over a time window',
         defaults: { agg: 'mean', window: '7d' },
         fields: [
           { key: 'time_col', label: 'Time column', kind: 'column', types: 'date' },
@@ -361,7 +361,7 @@ export const OP_GROUPS = [
         ],
       },
       {
-        type: 'fill_gaps', label: 'Fill gaps over time',
+        type: 'fill_gaps', label: 'Fill gaps over time', desc: 'Fill empty values in time order',
         defaults: { method: 'forward' },
         fields: [
           { key: 'time_col', label: 'Time column', kind: 'column', types: 'date' },
@@ -375,7 +375,7 @@ export const OP_GROUPS = [
     name: 'SQL',
     ops: [
       {
-        type: 'sql', label: 'SQL query',
+        type: 'sql', label: 'SQL query', desc: 'Anything else, as a SQL query on the table',
         defaults: { query: 'SELECT *\nFROM df\n', dialect: 'duckdb' },
         fields: [
           { key: 'query', label: 'Query (the current table is "df")', kind: 'textarea', rows: 6 },

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, formatValue } from '../api';
+import { useDialogs } from './ui';
 
 const inputClass = "bg-white border border-grid-border rounded-DEFAULT px-2 h-[28px] text-[12px] outline-none focus:border-primary-container";
 
@@ -25,6 +26,7 @@ function MetricForm({ onAdd }) {
 
 export default function VersionsView({ project, onChanged, onOpenNode, onNewVersion, notify }) {
   const [sortBy, setSortBy] = useState({ key: 'created_at', desc: false });
+  const { confirm } = useDialogs();
 
   // Metrics usually arrive from Python (loom.log_metrics) while this is open:
   // refresh when the view opens and whenever the window regains focus.
@@ -59,7 +61,7 @@ export default function VersionsView({ project, onChanged, onOpenNode, onNewVers
   };
 
   const remove = async name => {
-    if (!window.confirm(`Delete version "${name}"? The steps stay; only the name and its metrics go.`)) return;
+    if (!(await confirm(`Delete version “${name}”?`, 'The steps stay; only the name, notes and metrics go.', { confirmLabel: 'Delete version', danger: true }))) return;
     try {
       await api(`/project/${project.id}/versions/${encodeURIComponent(name)}`, { method: 'DELETE' });
       onChanged();

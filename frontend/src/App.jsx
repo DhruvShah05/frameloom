@@ -11,6 +11,7 @@ import StartScreen from './components/StartScreen';
 import VersionsView from './components/VersionsView';
 import { api, download } from './api';
 import { OPS_BY_TYPE } from './opsConfig';
+import { Modal, ProgressBar, useDialogs } from './components/ui';
 
 const VIEWS = [['grid', 'Grid'], ['profile', 'Profile'], ['chart', 'Chart'], ['tree', 'Branch Tree'], ['versions', 'Versions'], ['compare', 'Compare'], ['audit', 'Audit']];
 const SAMPLE_CHOICES = [['', 'All rows'], ['head:10000', 'First 10,000 rows'], ['random:10000', 'Random 10,000 rows'], ['head:100000', 'First 100,000 rows'], ['random:100000', 'Random 100,000 rows']];
@@ -67,6 +68,17 @@ function App() {
   const [stepMenu, setStepMenu] = useState(null); // node id whose menu is open
   const [pickNode, setPickNode] = useState(null); // node to copy to another branch
   const [versionForm, setVersionForm] = useState({ name: '', message: '' });
+  const [flashNode, setFlashNode] = useState(null); // briefly highlight what an action produced
+  const [sidebar, setSidebar] = useState(() => {
+    try { return { width: 280, collapsed: false, ...JSON.parse(localStorage.getItem('frameloom.sidebar') || '{}') }; } catch { return { width: 280, collapsed: false }; }
+  });
+  const { confirm, prompt } = useDialogs();
+  useEffect(() => { try { localStorage.setItem('frameloom.sidebar', JSON.stringify(sidebar)); } catch { /* private mode */ } }, [sidebar]);
+  useEffect(() => {
+    if (!flashNode) return undefined;
+    const t = setTimeout(() => setFlashNode(null), 1500);
+    return () => clearTimeout(t);
+  }, [flashNode]);
 
   const gridRef = useRef(null);
   const viewingEarlierRef = useRef(false);
@@ -204,12 +216,14 @@ function App() {
         const r = await api(`/project/${project.id}/step/${activeNode}/insert`, { method: 'POST', body: { operation: { type, params } } });
         setProject(r.project);
         selectNode(r.project, r.node_id);
+        setFlashNode(r.node_id);
         notify('Step inserted; later steps replayed', 'info');
         return true;
       }
       const node = await addStep(activeNode, type, params);
       const p = await refreshTree();
       if (p) selectNode(p, node.id);
+      setFlashNode(node.id);
       return true;
     } catch (e) {
       notify(e.message);
@@ -227,6 +241,7 @@ function App() {
       const r = await api(`/project/${project.id}${path}`, { method: 'POST', body });
       setProject(r.project);
       selectNode(r.project, r.node_id);
+      setFlashNode(r.node_id);
       if (message) notify(message, 'info');
       return true;
     } catch (e) {
@@ -243,13 +258,13 @@ function App() {
 
   const deleteStep = async node => {
     setStepMenu(null);
-    if (!window.confirm(`Remove "${node.operation.label}" and replay the steps after it? (Undo brings it back.)`)) return;
+    if (!(await confirm('Remove this step?', `“${node.operation.label}” will be removed and the steps after it replayed. Undo brings it back.`, { confirmLabel: 'Remove step', danger: true }))) return;
     rewrite(`/step/${node.id}/delete`, {}, 'Step removed; later steps replayed');
   };
 
   const noteStep = async node => {
     setStepMenu(null);
-    const note = window.prompt('Note for this step (why it was done):', node.note || '');
+    const note = await prompt(node.note ? 'Edit note' : 'Add a note', 'Why was this step done? Notes travel with the step when history is edited.', node.note || '', { multiline: true, placeholder: 'e.g. ids above 9000 are test accounts' });
     if (note === null) return;
     try {
       await api(`/project/${project.id}/step/${node.id}/note`, { method: 'POST', body: { note } });
@@ -271,7 +286,7 @@ function App() {
   };
 
   const deleteBranch = async name => {
-    if (!window.confirm(`Delete branch "${name}"? Its steps stay in the history; only the name goes.`)) return;
+    if (!(await confirm(`Delete branch “${name}”?`, 'Its steps stay in the history; only the branch name goes.', { confirmLabel: 'Delete branch', danger: true }))) return;
     try {
       await api(`/project/${project.id}/branch/${encodeURIComponent(name)}`, { method: 'DELETE' });
       await refreshTree();
@@ -351,6 +366,12 @@ function App() {
 
   useEffect(() => {
     const onKey = e => {
+      if (e.key === 'Escape' && !document.querySelector('[role="dialog"]')) {
+        setStepMenu(null);
+        setExportOpen(false);
+        setEditing(null);
+        return;
+      }
       if (!(e.metaKey || e.ctrlKey) || !project) return;
       const t = e.target;
       if (t.closest?.('input, textarea, select, [contenteditable="true"], .ag-cell-inline-editing, .ag-floating-filter')) return;
@@ -504,7 +525,7 @@ function App() {
             const isActive = node.id === activeNode;
             const isRoot = !node.parent_id;
             return (
-              <div key={node.id} className={`relative flex items-start gap-2 p-1.5 rounded-DEFAULT w-full ${stepMenu === node.id ? 'z-50' : 'z-10'} group ${isActive ? 'bg-highlight-bg border border-bright-accent' : 'border border-transparent hover:bg-surface-container-high'} ${editing?.nodeId === node.id ? 'ring-2 ring-primary-container' : ''}`}>
+              <div key={node.id} className={`relative flex items-start gap-2 p-1.5 rounded-DEFAULT w-full ${stepMenu === node.id ? 'z-50' : 'z-10'} group ${isActive ? 'bg-highlight-bg border border-bright-accent' : 'border border-transparent hover:bg-surface-container-high'} ${editing?.nodeId === node.id ? 'ring-2 ring-primary-container' : ''} ${flashNode === node.id ? 'flash' : ''}`}>
                 <button type="button" className="flex items-start gap-2 flex-1 min-w-0 text-left bg-transparent border-0 p-0 cursor-pointer"
                   onClick={() => !isActive && selectNode(project, node.id)}>
                   <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${isActive ? 'bg-primary-container text-white' : 'bg-white border border-grid-border group-hover:border-primary-container'}`}>
@@ -522,7 +543,7 @@ function App() {
                   </div>
                 </button>
                 {onBranch && (
-                  <button type="button" className="icon-btn opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0" aria-label={`Actions for ${node.operation.label}`}
+                  <button type="button" className="icon-btn opacity-40 group-hover:opacity-100 focus:opacity-100 shrink-0" aria-label={`Actions for ${node.operation.label}`}
                     onClick={() => setStepMenu(m => (m === node.id ? null : node.id))}>
                     <span className="material-symbols-outlined text-[18px]">more_horiz</span>
                   </button>
@@ -530,7 +551,7 @@ function App() {
                 {stepMenu === node.id && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setStepMenu(null)} />
-                    <div className="absolute right-1 top-8 z-50 w-[210px] bg-white border border-grid-border rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.08)] py-1">
+                    <div className="absolute right-1 top-8 z-50 w-[210px] bg-white border border-grid-border rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.08)] py-1 menu-pop" role="menu">
                       {!isRoot && OPS_BY_TYPE[node.operation.type] && (
                         <button className="menu-item" onClick={() => { setStepMenu(null); setEditing({ nodeId: node.id, type: node.operation.type, params: node.operation.params, label: node.operation.label }); }}>
                           <span className="material-symbols-outlined text-[16px]">edit</span> Edit this step
@@ -562,17 +583,19 @@ function App() {
 
   return (
     <div className="h-screen w-screen flex flex-col text-on-surface bg-surface overflow-hidden">
+      <ProgressBar />
       {/* Top bar */}
       <div className="bg-primary-container text-on-primary flex items-center px-4 w-full justify-between h-[48px] shrink-0">
-        <div className="flex items-center gap-6 h-full min-w-0">
-          <button className="font-panel-title text-panel-title font-bold text-white bg-transparent border-0 cursor-pointer p-0" title="Back to start" onClick={() => { setProject(null); setUrlProject(null); fetchRecipes(); }}>
-            Loom
+        <div className="flex items-center gap-4 lg:gap-6 h-full min-w-0">
+          <button className="font-panel-title text-panel-title font-bold text-white bg-transparent border-0 cursor-pointer p-0 shrink-0" title="Back to start" onClick={() => { setProject(null); setUrlProject(null); fetchRecipes(); }}>
+            FrameLoom
           </button>
           {project && (
-            <nav className="hidden md:flex h-full items-end gap-5">
+            <nav className="flex h-full items-end gap-3 lg:gap-5 overflow-x-auto min-w-0 no-scrollbar" aria-label="Views">
               {VIEWS.map(([id, label]) => (
                 <button key={id} onClick={() => setViewMode(id)}
-                  className={`pb-[12px] bg-transparent border-0 border-b-2 cursor-pointer font-toolbar-button text-toolbar-button ${viewMode === id ? 'text-white border-white' : 'text-white/80 border-transparent hover:text-white'}`}>
+                  aria-current={viewMode === id ? 'page' : undefined}
+                  className={`pb-[12px] bg-transparent border-0 border-b-2 cursor-pointer font-toolbar-button text-toolbar-button whitespace-nowrap transition-colors ${viewMode === id ? 'text-white border-white' : 'text-white/80 border-transparent hover:text-white'}`}>
                   {label}
                 </button>
               ))}
@@ -580,19 +603,19 @@ function App() {
           )}
         </div>
         {project && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 lg:gap-2 shrink-0">
             <button onClick={() => setModal('branch')} className="topbar-btn bg-white/10">
               <span className="material-symbols-outlined text-[16px]">alt_route</span>
               <span className="max-w-[140px] truncate">{project.branches[project.head] ? project.head : 'detached'}</span>
             </button>
             <div className="relative">
-              <button onClick={() => setExportOpen(o => !o)} className="topbar-btn" disabled={busy}>
-                <span className="material-symbols-outlined text-[18px]">file_download</span> Export ▾
+              <button onClick={() => setExportOpen(o => !o)} className="topbar-btn" disabled={busy} aria-label="Export" aria-haspopup="menu" aria-expanded={exportOpen}>
+                <span className="material-symbols-outlined text-[18px]">file_download</span><span className="hidden xl:inline">Export</span> ▾
               </button>
               {exportOpen && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setExportOpen(false)} />
-                  <div className="absolute right-0 top-[38px] z-50 w-[200px] bg-white text-on-surface border border-grid-border rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.08)] py-1">
+                  <div className="absolute right-0 top-[38px] z-50 w-[200px] bg-white text-on-surface border border-grid-border rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.08)] py-1 menu-pop" role="menu">
                     <button className="menu-item" onClick={() => exportCode('polars')}><span className="material-symbols-outlined text-[16px]">code</span> Python code (Polars)</button>
                     <button className="menu-item" onClick={() => exportCode('pandas')}><span className="material-symbols-outlined text-[16px]">code</span> Python code (pandas)</button>
                     <div className="h-px bg-grid-border my-1" />
@@ -604,11 +627,11 @@ function App() {
                 </>
               )}
             </div>
-            <button onClick={() => { setVersionForm({ name: '', message: '' }); setModal('version'); }} className="topbar-btn" title="Name the current step so you can load it from code">
-              <span className="material-symbols-outlined text-[18px]">bookmark_add</span> Save Version
+            <button onClick={() => { setVersionForm({ name: '', message: '' }); setModal('version'); }} className="topbar-btn" title="Name the current step so you can load it from code" aria-label="Save Version">
+              <span className="material-symbols-outlined text-[18px]">bookmark_add</span><span className="hidden xl:inline">Save Version</span>
             </button>
-            <button onClick={() => setModal('recipe')} className="topbar-btn border border-white/20">
-              <span className="material-symbols-outlined text-[18px]">save</span> Save Recipe
+            <button onClick={() => setModal('recipe')} className="topbar-btn border border-white/20" title="Save the steps so far as a reusable recipe" aria-label="Save Recipe">
+              <span className="material-symbols-outlined text-[18px]">save</span><span className="hidden xl:inline">Save Recipe</span>
             </button>
           </div>
         )}
@@ -620,11 +643,42 @@ function App() {
       ) : (
         <div className="flex flex-1 overflow-hidden">
           {viewMode === 'grid' ? (
-            <aside className="w-sidebar-width-prompt bg-sidebar-bg border-r border-grid-border flex flex-col shrink-0 overflow-y-auto grid-scroll">
-              <OperationMenu onApplyOp={applyOp} schema={schema} busy={busy} editing={editing} viewingEarlier={viewingEarlier}
-                onSaveEdit={saveEdit} onCancelEdit={() => setEditing(null)} />
-              {renderHistory()}
-            </aside>
+            sidebar.collapsed ? (
+              <aside className="w-[40px] bg-sidebar-bg border-r border-grid-border flex flex-col items-center py-2 gap-2 shrink-0">
+                <button className="icon-btn" onClick={() => setSidebar(sb => ({ ...sb, collapsed: false }))} title="Show the transform & history panel" aria-label="Show sidebar">
+                  <span className="material-symbols-outlined text-[18px]">left_panel_open</span>
+                </button>
+                <button className="icon-btn" disabled={!canUndo || busy} onClick={() => undoRedo('undo')} title="Undo" aria-label="Undo"><span className="material-symbols-outlined text-[18px]">undo</span></button>
+                <button className="icon-btn" disabled={!canRedo || busy} onClick={() => undoRedo('redo')} title="Redo" aria-label="Redo"><span className="material-symbols-outlined text-[18px]">redo</span></button>
+              </aside>
+            ) : (
+              <>
+                <aside style={{ width: sidebar.width }} className="bg-sidebar-bg border-r border-grid-border flex flex-col shrink-0 overflow-y-auto grid-scroll relative">
+                  <button className="icon-btn absolute right-2 top-3 z-20" onClick={() => setSidebar(sb => ({ ...sb, collapsed: true }))} title="Hide this panel" aria-label="Hide sidebar">
+                    <span className="material-symbols-outlined text-[18px]">left_panel_close</span>
+                  </button>
+                  <OperationMenu onApplyOp={applyOp} schema={schema} busy={busy} editing={editing} viewingEarlier={viewingEarlier}
+                    onSaveEdit={saveEdit} onCancelEdit={() => setEditing(null)} />
+                  {renderHistory()}
+                </aside>
+                <div className="resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={0}
+                  onKeyDown={e => {
+                    if (e.key === 'ArrowLeft') setSidebar(sb => ({ ...sb, width: Math.max(240, sb.width - 20) }));
+                    if (e.key === 'ArrowRight') setSidebar(sb => ({ ...sb, width: Math.min(560, sb.width + 20) }));
+                  }}
+                  onMouseDown={e => {
+                    e.preventDefault();
+                    const startX = e.clientX;
+                    const startW = sidebar.width;
+                    const handle = e.currentTarget;
+                    handle.classList.add('is-dragging');
+                    const move = ev => setSidebar(sb => ({ ...sb, width: Math.min(560, Math.max(240, startW + ev.clientX - startX)) }));
+                    const up = () => { handle.classList.remove('is-dragging'); window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+                    window.addEventListener('mousemove', move);
+                    window.addEventListener('mouseup', up);
+                  }} />
+              </>
+            )
           ) : (
             <ProjectSidebar project={project} activeNode={activeNode} onSwitchBranch={switchBranch} schema={schema} totalRows={totalRows} />
           )}
@@ -666,7 +720,7 @@ function App() {
                     onTotal={setVisibleRows}
                   />
                 </div>
-                <div className="h-[24px] bg-sidebar-bg border-t border-grid-border flex items-center px-4 justify-between font-ui-small text-ui-small text-on-surface-variant shrink-0 w-full z-20">
+                <div className="h-[24px] bg-sidebar-bg border-t border-grid-border flex items-center px-4 gap-4 justify-between font-ui-small text-ui-small text-on-surface-variant shrink-0 w-full z-20 whitespace-nowrap overflow-hidden">
                   <div className="flex items-center gap-4">
                     <span>
                       {visibleRows != null && totalRows != null
@@ -730,7 +784,7 @@ function App() {
       {/* Notices */}
       <div className="fixed bottom-8 right-4 z-[60] flex flex-col gap-2 max-w-[420px]" role="status" aria-live="polite">
         {notices.map(n => (
-          <div key={n.id} className={`flex items-start gap-2 px-3 py-2 rounded-lg border shadow-[0_8px_24px_rgba(0,0,0,0.08)] text-[13px] ${n.kind === 'error' ? 'bg-error-container border-error/30 text-on-error-container' : 'bg-white border-grid-border text-on-surface'}`}>
+          <div key={n.id} className={`toast-in flex items-start gap-2 px-3 py-2 rounded-lg border shadow-[0_8px_24px_rgba(0,0,0,0.08)] text-[13px] ${n.kind === 'error' ? 'bg-error-container border-error/30 text-on-error-container' : 'bg-white border-grid-border text-on-surface'}`}>
             <span className="material-symbols-outlined text-[18px]">{n.kind === 'error' ? 'error' : 'check_circle'}</span>
             <span className="flex-1 break-words">{n.text}</span>
             <button className="bg-transparent border-0 cursor-pointer p-0 text-inherit" onClick={() => setNotices(x => x.filter(y => y.id !== n.id))} aria-label="Dismiss">
@@ -742,10 +796,9 @@ function App() {
 
       {/* Code modal */}
       {modal === 'code' && (
-        <div className="modal-overlay" onClick={() => setModal(null)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
+        <Modal onClose={() => setModal(null)} labelledBy="modal-title" wide>
             <div className="flex items-center gap-3 mb-2">
-              <h2 className="font-panel-title font-bold text-lg m-0 text-on-surface">Generated code</h2>
+              <h2 id="modal-title" className="font-panel-title font-bold text-lg m-0 text-on-surface">Generated code</h2>
               <div className="ml-auto flex border border-grid-border rounded-DEFAULT overflow-hidden" role="tablist">
                 {[['polars', 'Polars'], ['pandas', 'pandas']].map(([t, l]) => (
                   <button key={t} role="tab" aria-selected={codeTarget === t} onClick={() => exportCode(t)}
@@ -759,44 +812,38 @@ function App() {
               <button className="btn-secondary" onClick={() => navigator.clipboard.writeText(code).then(() => notify('Copied to clipboard', 'info'), () => notify('Copy failed — select the text instead'))}>Copy</button>
               <button className="btn" onClick={() => setModal(null)}>Close</button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
 
       {/* Save recipe modal */}
       {modal === 'recipe' && (
-        <div className="modal-overlay" onClick={() => setModal(null)}>
-          <form className="modal-content" onClick={e => e.stopPropagation()} onSubmit={e => { e.preventDefault(); saveRecipe(); }}>
-            <h2 className="font-panel-title font-bold text-lg mb-2 text-on-surface">Save recipe</h2>
+        <Modal onClose={() => setModal(null)} labelledBy="modal-title" as="form" onSubmit={() => saveRecipe()}>
+            <h2 id="modal-title" className="font-panel-title font-bold text-lg mb-2 text-on-surface">Save recipe</h2>
             <p className="text-on-surface-variant text-sm mb-4">Saves the steps up to the selected one, so you can replay them on another file with the same columns.</p>
             <input autoFocus className="w-full bg-white border border-grid-border rounded-DEFAULT px-2 h-[36px] mb-4 outline-none focus:border-primary-container" placeholder="e.g. monthly-cleanup" value={recipeName} onChange={e => setRecipeName(e.target.value)} />
             <div className="flex gap-2 justify-end">
               <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Cancel</button>
               <button type="submit" className="btn" disabled={!recipeName.trim()}>Save</button>
             </div>
-          </form>
-        </div>
+        </Modal>
       )}
 
       {/* Recipe warnings */}
       {recipeWarnings && (
-        <div className="modal-overlay" onClick={() => setRecipeWarnings(null)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <h2 className="font-panel-title font-bold text-lg mb-2 text-on-surface">This file may not fit the recipe</h2>
+        <Modal onClose={() => setRecipeWarnings(null)} labelledBy="modal-title">
+            <h2 id="modal-title" className="font-panel-title font-bold text-lg mb-2 text-on-surface">This file may not fit the recipe</h2>
             <ul className="text-sm text-on-surface mb-4 pl-5">{recipeWarnings.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
             <div className="flex gap-2 justify-end">
               <button className="btn-secondary" onClick={() => setRecipeWarnings(null)}>Cancel</button>
               <button className="btn" onClick={() => { const r = recipeWarnings.retry; setRecipeWarnings(null); r(); }}>Apply anyway</button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
 
       {/* Save version modal */}
       {modal === 'version' && project && (
-        <div className="modal-overlay" onClick={() => setModal(null)}>
-          <form className="modal-content" onClick={e => e.stopPropagation()} onSubmit={e => { e.preventDefault(); saveVersion(); }}>
-            <h2 className="font-panel-title font-bold text-lg mb-2 text-on-surface">Save version</h2>
+        <Modal onClose={() => setModal(null)} labelledBy="modal-title" as="form" onSubmit={() => saveVersion()}>
+            <h2 id="modal-title" className="font-panel-title font-bold text-lg mb-2 text-on-surface">Save version</h2>
             <p className="text-on-surface-variant text-sm mb-4">
               Names <strong>“{project.nodes[activeNode]?.operation.label}”</strong> so you can load it from Python and record model results against it. Versions never move.
             </p>
@@ -810,15 +857,13 @@ function App() {
               <button type="button" className="btn-secondary" onClick={() => setModal(null)}>Cancel</button>
               <button type="submit" className="btn" disabled={!versionForm.name.trim()}>Save version</button>
             </div>
-          </form>
-        </div>
+        </Modal>
       )}
 
       {/* Copy a step to another branch */}
       {pickNode && project && (
-        <div className="modal-overlay" onClick={() => setPickNode(null)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <h2 className="font-panel-title font-bold text-lg mb-2 text-on-surface">Copy step to another branch</h2>
+        <Modal onClose={() => setPickNode(null)} labelledBy="modal-title">
+            <h2 id="modal-title" className="font-panel-title font-bold text-lg mb-2 text-on-surface">Copy step to another branch</h2>
             <p className="text-on-surface-variant text-sm mb-4">“{pickNode.operation.label}” will be added to the end of the branch you pick.</p>
             <div className="flex flex-col gap-2">
               {Object.values(project.branches).filter(b => b.name !== project.head).map(b => (
@@ -829,15 +874,13 @@ function App() {
               ))}
             </div>
             <div className="flex justify-end mt-6"><button className="btn-secondary" onClick={() => setPickNode(null)}>Cancel</button></div>
-          </div>
-        </div>
+        </Modal>
       )}
 
       {/* Branch modal */}
       {modal === 'branch' && project && (
-        <div className="modal-overlay" onClick={() => setModal(null)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <h2 className="font-panel-title font-bold text-lg mb-4 text-on-surface">Branches</h2>
+        <Modal onClose={() => setModal(null)} labelledBy="modal-title">
+            <h2 id="modal-title" className="font-panel-title font-bold text-lg mb-4 text-on-surface">Branches</h2>
             <form className="flex gap-2" onSubmit={e => { e.preventDefault(); createBranch(); }}>
               <input autoFocus type="text" placeholder="new-branch-name" value={newBranchName} onChange={e => setNewBranchName(e.target.value)}
                 className="flex-1 bg-white border border-grid-border rounded-DEFAULT px-2 h-[36px] outline-none focus:border-primary-container" />
@@ -874,8 +917,7 @@ function App() {
             <div className="flex justify-end mt-6">
               <button className="btn-secondary" onClick={() => setModal(null)}>Close</button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

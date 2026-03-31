@@ -2,6 +2,20 @@
 // app; in `npm run dev` Vite proxies these paths to the backend (vite.config.js).
 export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
+// ------------------------------------------------------------ activity
+// Lets the UI show a progress bar while any request is in flight.
+let inflight = 0;
+const listeners = new Set();
+const bump = d => { inflight = Math.max(0, inflight + d); listeners.forEach(fn => fn(inflight)); };
+export function onActivity(fn) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+async function tracked(promise) {
+  bump(1);
+  try { return await promise; } finally { bump(-1); }
+}
+
 export class ApiError extends Error {
   constructor(message, status) {
     super(message);
@@ -20,7 +34,11 @@ async function parseError(res) {
   }
 }
 
-export async function api(path, { method = 'GET', body, query } = {}) {
+export function api(path, options) {
+  return tracked(request(path, options));
+}
+
+async function request(path, { method = 'GET', body, query } = {}) {
   let url = `${API_BASE}${path}`;
   if (query) {
     const qs = new URLSearchParams(Object.entries(query).filter(([, v]) => v !== undefined && v !== null));
@@ -34,14 +52,18 @@ export async function api(path, { method = 'GET', body, query } = {}) {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (e) {
-    throw new ApiError(`Can't reach the Loom server (${e.message}). Is it running?`, 0);
+    throw new ApiError(`Can't reach the FrameLoom server (${e.message}). Is it running?`, 0);
   }
   if (!res.ok) throw new ApiError(await parseError(res), res.status);
   return res.json();
 }
 
 /** POST and save the response as a file download. */
-export async function download(path, body) {
+export function download(path, body) {
+  return tracked(downloadFile(path, body));
+}
+
+async function downloadFile(path, body) {
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
